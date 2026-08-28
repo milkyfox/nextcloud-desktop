@@ -59,6 +59,7 @@ private:
     QJsonArray _cdcRecipe;
 
     int _currentBlockIndex = 0;
+    qint64 _deltaBytesTransferred = 0;
     bool _deltaAvailable = false;
     std::unique_ptr<PropagateUploadFileCommon> _fallbackJob;
 };

@@ -215,6 +215,8 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
                                        << QString::number(savings, 'f', 1) << "% savings)";
 
         _currentBlockIndex = 0;
+        _deltaBytesTransferred = 0;
+        propagator()->reportProgress(*_item, 0);
         uploadNextBlock();
     } else {
         // === Legacy Fixed 4MB Mode ===
@@ -258,6 +260,8 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
                                        << QString::number(savingsPercent, 'f', 1) << "% savings)";
 
         _currentBlockIndex = 0;
+        _deltaBytesTransferred = 0;
+        propagator()->reportProgress(*_item, 0);
         uploadNextBlock();
     }
 }
@@ -430,6 +434,23 @@ void PropagateUploadFileDelta::slotBlockUploaded()
         return;
     }
 
+    if (_useCdc) {
+        if (_currentBlockIndex < _missingCdcChunkIndices.size()) {
+            int chunkIdx = _missingCdcChunkIndices[_currentBlockIndex];
+            if (chunkIdx < _localCdcMap.signatures.size()) {
+                _deltaBytesTransferred += _localCdcMap.signatures[chunkIdx].size;
+            }
+        }
+    } else {
+        if (_currentBlockIndex < _changedBlocks.size()) {
+            int blockIdx = _changedBlocks[_currentBlockIndex];
+            if (blockIdx < _localBlockMap.signatures.size()) {
+                _deltaBytesTransferred += _localBlockMap.signatures[blockIdx].size;
+            }
+        }
+    }
+    propagator()->reportProgress(*_item, _deltaBytesTransferred);
+
     _currentBlockIndex++;
     uploadNextBlock();
 }
@@ -490,6 +511,7 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
 
     qCInfo(lcPropagateUploadDelta) << "Delta sync completed for" << _item->_file
         << "—" << _item->_deltaSyncInfo;
+    propagator()->reportProgress(*_item, _fileToUpload._size);
     finalize();
 }
 
