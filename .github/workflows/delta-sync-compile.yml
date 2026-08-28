@@ -1,0 +1,276 @@
+name: Delta Sync Build & Release
+on:
+  push:
+    branches: [delta-sync]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: delta-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write  # needed for release creation
+
+jobs:
+  build-linux:
+    name: Linux GCC
+    runs-on: ubuntu-latest
+    container: ghcr.io/nextcloud/continuous-integration-client-qt6:client-sid-6.10.2-2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure and compile
+        run: |
+          mkdir build && cd build
+          cmake .. -G Ninja \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DQT_MAJOR_VERSION=6 \
+            -DQUICK_COMPILER=ON \
+            -DBUILD_UPDATER=ON \
+            -DBUILD_TESTING=1
+          ninja
+
+      - name: Run tests
+        run: |
+          cd build
+          useradd -m -s /bin/bash test
+          chown -R test:test .
+          su -c 'xvfb-run ctest --output-on-failure' test
+
+      - name: Package tarball
+        run: |
+          cd build
+          DESTDIR=$(pwd)/pkg ninja install
+          tar czf nextcloud-desktop-delta-sync-linux-x86_64.tar.gz -C pkg .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-delta-sync-linux
+          path: build/nextcloud-desktop-delta-sync-linux-x86_64.tar.gz
+
+  build-windows:
+    name: Windows MSVC
+    runs-on: windows-2022
+    env:
+      CRAFT_TARGET: windows-msvc2022_64-cl
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster.ini
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install inkscape
+        shell: pwsh
+        run: choco install inkscape
+
+      - name: Install Craft Master with deps
+        shell: pwsh
+        run: |
+          & cmd /C "git clone -q --depth=1 https://invent.kde.org/packaging/craftmaster.git ${{ env.CRAFT_MASTER_LOCATION }} 2>&1"
+
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|master|"
+          craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|master|"
+          craft craft
+          craft --install-deps nextcloud-client
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          craft --src-dir "${{ github.workspace }}" nextcloud-client
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          craft --test nextcloud-client
+
+      - name: Fix upstream blueprint (missing import os)
+        shell: pwsh
+        run: |
+          $bp = Get-ChildItem -Recurse -Path "${{ github.workspace }}/${{ env.CRAFT_TARGET }}" -Filter "nextcloud-client.py" | Where-Object { $_.FullName -match "blueprints" } | Select-Object -First 1
+          if ($bp) {
+            $content = Get-Content $bp.FullName -Raw
+            if ($content -notmatch "^import os" -and $content -notmatch "`nimport os") {
+              $content = "import os`n" + $content
+              Set-Content $bp.FullName $content
+              Write-Host "Patched $($bp.FullName): added 'import os'"
+            }
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+
+          craft --package nextcloud-client
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "${{ github.workspace }}/binaries" -Force
+          Copy-Item "$env:HOME/craft/binaries/*" "${{ github.workspace }}/binaries/" -ErrorAction SilentlyContinue
+          Get-ChildItem "${{ github.workspace }}/${{ env.CRAFT_TARGET }}/tmp/*.exe" -ErrorAction SilentlyContinue | Copy-Item -Destination "${{ github.workspace }}/binaries/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-delta-sync-windows
+          path: ${{ github.workspace }}/binaries/*
+
+  build-macos:
+    name: macOS Clang
+    runs-on: macos-15
+    continue-on-error: true
+    env:
+      CRAFT_TARGET: macos-clang-arm64
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}/CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}/craftmaster.ini
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Homebrew dependencies
+        run: brew install homebrew/cask/inkscape
+
+      - name: Install Craft Master with deps
+        run: |
+          git clone -q --depth=1 https://invent.kde.org/packaging/craftmaster.git "$CRAFT_MASTER_LOCATION"
+
+          function craft() {
+              python3 "$CRAFT_MASTER_LOCATION/CraftMaster.py" --config "$CRAFT_MASTER_CONFIG" --target "$CRAFT_TARGET" -c "$@"
+          }
+
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|master|"
+          craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|master|"
+
+          # Pre-download sources that CraftMaster's wget fails to fetch (cert/mirror issues)
+          for pkg_dir in libs/zlib libs/fontconfig; do
+            mkdir -p "${{ github.workspace }}/$CRAFT_TARGET/download/archives/$pkg_dir"
+          done
+          curl -fsSL -o "${{ github.workspace }}/$CRAFT_TARGET/download/archives/libs/zlib/zlib-1.3.1.tar.xz" \
+            https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.xz || true
+          curl -fsSL -o "${{ github.workspace }}/$CRAFT_TARGET/download/archives/libs/fontconfig/fontconfig-2.15.0.tar.gz" \
+            https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.gz || true
+
+          craft craft
+          craft --install-deps nextcloud-client
+
+      - name: Compile
+        run: |
+          function craft() {
+              python3 "$CRAFT_MASTER_LOCATION/CraftMaster.py" --config "$CRAFT_MASTER_CONFIG" --target "$CRAFT_TARGET" -c "$@"
+          }
+
+          craft --set srcDir="$GITHUB_WORKSPACE" nextcloud-client
+          craft --no-cache nextcloud-client
+
+      - name: Fix upstream blueprint (missing import os)
+        run: |
+          BP=$(find "${{ github.workspace }}/$CRAFT_TARGET" -path "*/blueprints/*/nextcloud-client/nextcloud-client.py" 2>/dev/null | head -1)
+          if [ -n "$BP" ] && ! grep -q "^import os" "$BP"; then
+            sed -i '' '1s/^/import os\n/' "$BP"
+            echo "Patched $BP: added 'import os'"
+          fi
+
+      - name: Package
+        run: |
+          function craft() {
+              python3 "$CRAFT_MASTER_LOCATION/CraftMaster.py" --config "$CRAFT_MASTER_CONFIG" --target "$CRAFT_TARGET" -c "$@"
+          }
+
+          # Try CraftMaster packaging first, fall back to manual DMG
+          craft --package nextcloud-client || {
+            echo "CraftMaster packaging failed, creating DMG manually..."
+            APP_DIR=$(find "${{ github.workspace }}/$CRAFT_TARGET" -name "Nextcloud.app" -maxdepth 5 | head -1)
+            if [ -n "$APP_DIR" ]; then
+              DMG_NAME="Nextcloud-delta-sync-macOS-arm64.dmg"
+              hdiutil create -volname "Nextcloud Delta Sync" -srcfolder "$APP_DIR" \
+                -ov -format UDZO "${{ github.workspace }}/$CRAFT_TARGET/$DMG_NAME"
+              echo "Created $DMG_NAME"
+            fi
+          }
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p "${{ github.workspace }}/binaries"
+          cp -v ~/craft/binaries/* "${{ github.workspace }}/binaries/" 2>/dev/null || true
+          find "${{ github.workspace }}/$CRAFT_TARGET" -name "*.dmg" -exec cp -v {} "${{ github.workspace }}/binaries/" \; 2>/dev/null || true
+          find "${{ github.workspace }}/$CRAFT_TARGET" -name "Nextcloud*.app" -maxdepth 5 -exec sh -c \
+            'tar czf "${{ github.workspace }}/binaries/Nextcloud-delta-sync-macOS-arm64.app.tar.gz" -C "$(dirname "$1")" "$(basename "$1")"' _ {} \; 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-delta-sync-macos
+          path: ${{ github.workspace }}/binaries/*
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows, build-macos]
+    if: always() && github.ref == 'refs/heads/delta-sync'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f | head -50
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: delta-sync-latest
+          name: "Nextcloud Desktop — Delta Sync (latest build)"
+          body: |
+            **Nextcloud desktop client with block-level delta sync.**
+
+            When the [crispcloud_delta](https://github.com/CrispStrobe/crispcloud-delta-sync) server app is installed, this client uploads only changed 4 MB blocks instead of full files.
+
+            - Settings toggle: General > Advanced > "Enable block-level delta sync"
+            - Activity display shows per-file bandwidth savings
+            - Desktop notifications on sync completion
+
+            Built from `delta-sync` branch, commit ${{ github.sha }}.
+          draft: false
+          prerelease: true
+          files: artifacts/**/*
+          make_latest: false
