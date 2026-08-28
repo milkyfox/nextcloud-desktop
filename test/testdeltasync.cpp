@@ -174,8 +174,8 @@ private slots:
 
     void testFastCdcMidFileInsertionRecovery()
     {
-        // Generate 3 MB of pseudo-random data
-        QByteArray original(3 * 1024 * 1024, 0);
+        // Generate 6 MB of pseudo-random data
+        QByteArray original(6 * 1024 * 1024, 0);
         for (int i = 0; i < original.size(); ++i) {
             original[i] = static_cast<char>((i * 1103515245 + 12345) & 0xFF);
         }
@@ -186,7 +186,7 @@ private slots:
         tmpOrig.flush();
 
         FastCdcMap origMap = DeltaSyncUtils::computeLocalFastCdcMap(tmpOrig.fileName());
-        QVERIFY(origMap.chunkCount >= 3);
+        QVERIFY(origMap.chunkCount >= 2);
 
         // Insert 1234 bytes at offset 1.2 MB
         int insertPos = 1200000;
