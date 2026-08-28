@@ -413,16 +413,15 @@ std::unique_ptr<PropagateUploadFileCommon> OwncloudPropagator::createUploadJob(S
 {
     auto job = std::unique_ptr<PropagateUploadFileCommon>{};
 
-    // Try block-level delta sync for large files when enabled in settings,
-    // the server app is available, and the file is an update to an existing file.
+    // Try block-level delta sync for large files when enabled in settings
+    // and the server app is available. Falls back to normal upload if unavailable.
     static constexpr qint64 deltaSyncMinSize = 10 * 1024 * 1024; // 10 MB
     if (item->_size >= deltaSyncMinSize
-        && item->_instruction != CSYNC_INSTRUCTION_NEW
         && ConfigFile().deltaSyncEnabled()
         && account()->capabilities().deltaSyncAvailable()) {
         job = std::make_unique<PropagateUploadFileDelta>(this, item);
-    } else if (item->_size > syncOptions().minChunkSize() && account()->capabilities().chunkingNg()) {
-        // Item is above minChunkSize (5MB), thus will be chunked via ChunkingNG
+    } else if (item->_size > syncOptions()._initialChunkSize && account()->capabilities().chunkingNg()) {
+        // Item is above _initialChunkSize, thus will be classified as to be chunked
         job = std::make_unique<PropagateUploadFileNG>(this, item);
     } else {
         job = std::make_unique<PropagateUploadFileV1>(this, item);

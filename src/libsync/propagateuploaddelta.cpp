@@ -488,7 +488,7 @@ void PropagateUploadFileDelta::fallbackToNormalUpload()
 {
     qCInfo(lcPropagateUploadDelta) << "Falling back to normal upload for" << _item->_file;
 
-    if (_item->_size > propagator()->syncOptions().minChunkSize()
+    if (_item->_size > propagator()->syncOptions()._initialChunkSize
         && propagator()->account()->capabilities().chunkingNg()) {
         _fallbackJob = std::make_unique<PropagateUploadFileNG>(propagator(), _item);
     } else {
