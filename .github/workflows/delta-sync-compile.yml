@@ -1,5 +1,6 @@
 name: Delta Sync Build & Release
 on:
+  workflow_dispatch:
   push:
     branches: [delta-sync]
     tags: ['v*']
