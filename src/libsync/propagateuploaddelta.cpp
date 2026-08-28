@@ -9,6 +9,8 @@
 #include "networkjobs.h"
 #include "account.h"
 #include "owncloudpropagator.h"
+#include "owncloudpropagator_p.h"
+#include "helpers.h"
 #include "common/syncjournaldb.h"
 #include "common/utility.h"
 #include "filesystem.h"
@@ -515,7 +517,7 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
     if (doc.isObject()) {
         QString etagStr = doc.object().value(QStringLiteral("etag")).toString();
         if (!etagStr.isEmpty()) {
-            _item->_etag = parseEtag(etagStr.toUtf8());
+            _item->_etag = parseEtag(etagStr.toUtf8().constData());
         }
         QString fid = doc.object().value(QStringLiteral("fileId")).toString();
         if (!fid.isEmpty()) {
@@ -523,7 +525,7 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         }
     }
     if (_item->_etag.isEmpty()) {
-        _item->_etag = parseEtag(getEtagFromReply(reply));
+        _item->_etag = getEtagFromReply(reply);
     }
     if (_item->_fileId.isEmpty()) {
         _item->_fileId = reply->rawHeader("OC-FileId");
