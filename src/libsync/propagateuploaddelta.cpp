@@ -55,6 +55,8 @@ void PropagateUploadFileDelta::doStartUpload()
     _deltaAppBase = QStringLiteral("/index.php/apps/crispcloud_delta");
 
     auto *job = new SimpleNetworkJob(propagator()->account(), this);
+    _jobs.append(job);
+    connect(job, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
     auto url = propagator()->account()->url();
     url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/status"));
 
@@ -71,6 +73,7 @@ void PropagateUploadFileDelta::slotStatusCheckFinished()
         fallbackToNormalUpload();
         return;
     }
+    slotJobDestroyed(job);
 
     auto reply = job->reply();
     if (reply->error() != QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
@@ -123,6 +126,8 @@ void PropagateUploadFileDelta::slotStatusCheckFinished()
     }
 
     auto *bmJob = new SimpleNetworkJob(propagator()->account(), this);
+    _jobs.append(bmJob);
+    connect(bmJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
     QNetworkRequest req;
     req.setUrl(url);
     bmJob->startRequest("GET", url, req);
@@ -136,6 +141,7 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
         fallbackToNormalUpload();
         return;
     }
+    slotJobDestroyed(job);
 
     auto reply = job->reply();
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -282,6 +288,8 @@ void PropagateUploadFileDelta::uploadNextBlock()
             QByteArray jsonBody = QJsonDocument(finalizePayload).toJson(QJsonDocument::Compact);
 
             auto *finalizeJob = new SimpleNetworkJob(propagator()->account(), this);
+            _jobs.append(finalizeJob);
+            connect(finalizeJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
             QNetworkRequest req;
             req.setUrl(url);
             req.setRawHeader("Content-Type", "application/json");
@@ -334,6 +342,8 @@ void PropagateUploadFileDelta::uploadNextBlock()
         url.setQuery(query);
 
         auto *putJob = new SimpleNetworkJob(propagator()->account(), this);
+        _jobs.append(putJob);
+        connect(putJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
         QNetworkRequest req;
         req.setUrl(url);
         req.setRawHeader("Content-Type", "application/octet-stream");
@@ -357,6 +367,8 @@ void PropagateUploadFileDelta::uploadNextBlock()
             url.setQuery(finalizeQuery);
 
             auto *finalizeJob = new SimpleNetworkJob(propagator()->account(), this);
+            _jobs.append(finalizeJob);
+            connect(finalizeJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
             QNetworkRequest req;
             req.setUrl(url);
             req.setRawHeader("OCS-APIREQUEST", "true");
@@ -403,6 +415,8 @@ void PropagateUploadFileDelta::uploadNextBlock()
         url.setQuery(query);
 
         auto *putJob = new SimpleNetworkJob(propagator()->account(), this);
+        _jobs.append(putJob);
+        connect(putJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
         QNetworkRequest req;
         req.setUrl(url);
         req.setRawHeader("Content-Type", "application/octet-stream");
@@ -424,6 +438,7 @@ void PropagateUploadFileDelta::slotBlockUploaded()
         fallbackToNormalUpload();
         return;
     }
+    slotJobDestroyed(job);
 
     auto reply = job->reply();
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -462,6 +477,7 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         fallbackToNormalUpload();
         return;
     }
+    slotJobDestroyed(job);
 
     auto reply = job->reply();
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -470,6 +486,26 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         qCWarning(lcPropagateUploadDelta) << "Finalize failed, HTTP" << httpCode;
         fallbackToNormalUpload();
         return;
+    }
+
+    // Extract new ETag and FileId from server response to ensure DB consistency
+    QByteArray body = reply->readAll();
+    QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (doc.isObject()) {
+        QString etagStr = doc.object().value(QStringLiteral("etag")).toString();
+        if (!etagStr.isEmpty()) {
+            _item->_etag = parseEtag(etagStr.toUtf8());
+        }
+        QString fid = doc.object().value(QStringLiteral("fileId")).toString();
+        if (!fid.isEmpty()) {
+            _item->_fileId = fid.toUtf8();
+        }
+    }
+    if (_item->_etag.isEmpty()) {
+        _item->_etag = parseEtag(getEtagFromReply(reply));
+    }
+    if (_item->_fileId.isEmpty()) {
+        _item->_fileId = reply->rawHeader("OC-FileId");
     }
 
     if (_useCdc) {
