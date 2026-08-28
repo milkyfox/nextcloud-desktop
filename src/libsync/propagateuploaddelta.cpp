@@ -27,6 +27,15 @@ namespace OCC {
 
 Q_LOGGING_CATEGORY(lcPropagateUploadDelta, "nextcloud.sync.propagator.upload.delta", QtInfoMsg)
 
+static QString getDeltaRemotePath(const OwncloudPropagator *propagator, const QString &relFile)
+{
+    QString full = propagator->fullRemotePath(relFile);
+    while (full.startsWith(QLatin1Char('/'))) {
+        full.remove(0, 1);
+    }
+    return full;
+}
+
 PropagateUploadFileDelta::PropagateUploadFileDelta(OwncloudPropagator *propagator, const SyncFileItemPtr &item)
     : PropagateUploadFileCommon(propagator, item)
 {
@@ -104,7 +113,7 @@ void PropagateUploadFileDelta::slotStatusCheckFinished()
 
     // Fetch remote block map
     auto url = propagator()->account()->url();
-    QString remotePath = _item->_file;
+    QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
     url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blockmap/") + remotePath);
 
     if (_useCdc) {
@@ -260,7 +269,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
         if (_currentBlockIndex >= _missingCdcChunkIndices.size()) {
             // All CDC chunks uploaded — finalize with Recipe
             auto url = propagator()->account()->url();
-            QString remotePath = _item->_file;
+            QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
             url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/finalize/") + remotePath);
 
             QJsonObject finalizePayload;
@@ -313,7 +322,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
                                         << "size=" << chunk.size;
 
         auto url = propagator()->account()->url();
-        QString remotePath = _item->_file;
+        QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
         url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blocks/") + remotePath);
         QUrlQuery query;
         query.addQueryItem(QStringLiteral("hash"), QString::fromLatin1(chunk.hash));
@@ -336,7 +345,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
         // === Legacy Fixed 4MB Flow ===
         if (_currentBlockIndex >= _changedBlocks.size()) {
             auto url = propagator()->account()->url();
-            QString remotePath = _item->_file;
+            QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
             url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/finalize/") + remotePath);
 
             QUrlQuery finalizeQuery;
@@ -382,7 +391,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
                                         << "size=" << sig.size;
 
         auto url = propagator()->account()->url();
-        QString remotePath = _item->_file;
+        QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
         url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blocks/") + remotePath);
         QUrlQuery query;
         query.addQueryItem(QStringLiteral("offset"), QString::number(sig.offset));
