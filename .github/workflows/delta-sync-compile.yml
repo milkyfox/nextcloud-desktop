@@ -51,7 +51,7 @@ jobs:
           tar czf nextcloud-desktop-delta-sync-linux-x86_64.tar.gz -C pkg .
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextcloud-delta-sync-linux
           path: build/nextcloud-desktop-delta-sync-linux-x86_64.tar.gz
@@ -142,7 +142,7 @@ jobs:
           Get-ChildItem "${{ github.workspace }}/${{ env.CRAFT_TARGET }}/tmp/*.exe" -ErrorAction SilentlyContinue | Copy-Item -Destination "${{ github.workspace }}/binaries/"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextcloud-delta-sync-windows
           path: ${{ github.workspace }}/binaries/*
@@ -238,7 +238,7 @@ jobs:
             'tar czf "${{ github.workspace }}/binaries/Nextcloud-delta-sync-macOS-arm64.app.tar.gz" -C "$(dirname "$1")" "$(basename "$1")"' _ {} \; 2>/dev/null || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextcloud-delta-sync-macos
           path: ${{ github.workspace }}/binaries/*
