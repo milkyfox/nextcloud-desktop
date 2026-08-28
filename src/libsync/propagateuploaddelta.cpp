@@ -204,7 +204,18 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
             _cdcRecipe.append(item);
         }
 
-        if (_missingCdcChunkIndices.isEmpty() && _localCdcMap.totalSize == _remoteCdcMap.totalSize) {
+        bool isIdentical = (_localCdcMap.totalSize == _remoteCdcMap.totalSize)
+            && (_localCdcMap.signatures.size() == _remoteCdcMap.signatures.size());
+        if (isIdentical) {
+            for (int i = 0; i < _localCdcMap.signatures.size(); ++i) {
+                if (_localCdcMap.signatures[i].hash != _remoteCdcMap.signatures[i].hash) {
+                    isIdentical = false;
+                    break;
+                }
+            }
+        }
+
+        if (isIdentical) {
             qCInfo(lcPropagateUploadDelta) << "File is identical (FastCDC), no upload needed:" << _item->_file;
             if (!_remoteCdcMap.etag.isEmpty()) {
                 _item->_etag = parseEtag(_remoteCdcMap.etag.toUtf8().constData());
