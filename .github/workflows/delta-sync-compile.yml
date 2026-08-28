@@ -245,7 +245,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-windows, build-macos]
+    needs: [build-windows]
     if: always() && github.ref == 'refs/heads/delta-sync'
     runs-on: ubuntu-latest
     steps:

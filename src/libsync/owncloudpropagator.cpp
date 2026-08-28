@@ -421,8 +421,8 @@ std::unique_ptr<PropagateUploadFileCommon> OwncloudPropagator::createUploadJob(S
         && ConfigFile().deltaSyncEnabled()
         && account()->capabilities().deltaSyncAvailable()) {
         job = std::make_unique<PropagateUploadFileDelta>(this, item);
-    } else if (item->_size > syncOptions()._initialChunkSize && account()->capabilities().chunkingNg()) {
-        // Item is above _initialChunkSize, thus will be classified as to be chunked
+    } else if (item->_size > syncOptions().minChunkSize() && account()->capabilities().chunkingNg()) {
+        // Item is above minChunkSize (5MB), thus will be chunked via ChunkingNG
         job = std::make_unique<PropagateUploadFileNG>(this, item);
     } else {
         job = std::make_unique<PropagateUploadFileV1>(this, item);
