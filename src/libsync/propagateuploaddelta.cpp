@@ -542,6 +542,18 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         if (!fid.isEmpty()) {
             _item->_fileId = fid.toUtf8();
         }
+        if (doc.object().contains(QStringLiteral("mtime"))) {
+            qint64 mtime = doc.object().value(QStringLiteral("mtime")).toVariant().toLongLong();
+            if (mtime > 0) {
+                _item->_modtime = mtime;
+            }
+        }
+        if (doc.object().contains(QStringLiteral("size"))) {
+            qint64 size = doc.object().value(QStringLiteral("size")).toVariant().toLongLong();
+            if (size > 0) {
+                _item->_size = size;
+            }
+        }
     }
     if (_item->_etag.isEmpty()) {
         _item->_etag = getEtagFromReply(reply);

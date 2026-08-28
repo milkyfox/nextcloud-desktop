@@ -254,8 +254,11 @@ FastCdcMap parseServerFastCdcMap(const QByteArray &json)
 QVector<int> findMissingCdcChunks(const FastCdcMap &local, const QSet<QByteArray> &remoteHashes)
 {
     QVector<int> missing;
+    QSet<QByteArray> seenMissing;
     for (int i = 0; i < local.signatures.size(); ++i) {
-        if (!remoteHashes.contains(local.signatures[i].hash)) {
+        const auto &h = local.signatures[i].hash;
+        if (!remoteHashes.contains(h) && !seenMissing.contains(h)) {
+            seenMissing.insert(h);
             missing.append(i);
         }
     }
