@@ -274,6 +274,13 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
 
 void PropagateUploadFileDelta::uploadNextBlock()
 {
+    // Ensure the local file hasn't been changed on disk by another app while delta sync is running
+    if (!FileSystem::verifyFileUnchanged(_fileToUpload._path, _item->_size, _item->_modtime)) {
+        propagator()->_anotherSyncNeeded = true;
+        abortWithError(SyncFileItem::SoftError, tr("Local file changed during sync."));
+        return;
+    }
+
     if (_useCdc) {
         // === FastCDC Upload Flow ===
         if (_currentBlockIndex >= _missingCdcChunkIndices.size()) {
@@ -288,12 +295,15 @@ void PropagateUploadFileDelta::uploadNextBlock()
             QByteArray jsonBody = QJsonDocument(finalizePayload).toJson(QJsonDocument::Compact);
 
             auto *finalizeJob = new SimpleNetworkJob(propagator()->account(), this);
+            finalizeJob->setTimeout(qMax(300 * 1000, finalizeJob->timeoutMsec()));
+            adjustLastJobTimeout(finalizeJob, _localCdcMap.totalSize);
             _jobs.append(finalizeJob);
             connect(finalizeJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
             QNetworkRequest req;
             req.setUrl(url);
             req.setRawHeader("Content-Type", "application/json");
             req.setRawHeader("OCS-APIREQUEST", "true");
+            req.setRawHeader("X-OC-Mtime", QByteArray::number(qint64(_item->_modtime)));
             if (!_remoteCdcMap.etag.isEmpty()) {
                 req.setRawHeader("If-Match", '"' + _remoteCdcMap.etag.toUtf8() + '"');
             }
@@ -345,6 +355,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
         url.setQuery(query);
 
         auto *putJob = new SimpleNetworkJob(propagator()->account(), this);
+        putJob->setTimeout(120 * 1000);
         _jobs.append(putJob);
         connect(putJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
         QNetworkRequest req;
@@ -370,11 +381,14 @@ void PropagateUploadFileDelta::uploadNextBlock()
             url.setQuery(finalizeQuery);
 
             auto *finalizeJob = new SimpleNetworkJob(propagator()->account(), this);
+            finalizeJob->setTimeout(qMax(300 * 1000, finalizeJob->timeoutMsec()));
+            adjustLastJobTimeout(finalizeJob, _localBlockMap.totalSize);
             _jobs.append(finalizeJob);
             connect(finalizeJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
             QNetworkRequest req;
             req.setUrl(url);
             req.setRawHeader("OCS-APIREQUEST", "true");
+            req.setRawHeader("X-OC-Mtime", QByteArray::number(qint64(_item->_modtime)));
             if (!_remoteBlockMap.etag.isEmpty()) {
                 req.setRawHeader("If-Match", '"' + _remoteBlockMap.etag.toUtf8() + '"');
             }
@@ -421,6 +435,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
         url.setQuery(query);
 
         auto *putJob = new SimpleNetworkJob(propagator()->account(), this);
+        putJob->setTimeout(120 * 1000);
         _jobs.append(putJob);
         connect(putJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
         QNetworkRequest req;
