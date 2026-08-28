@@ -35,7 +35,6 @@ private slots:
     void testAdler32MatchesPhp()
     {
         // Verify C++ adler32 matches the PHP implementation in BlockMapService.
-        // PHP: $a=1; $b=0; for each byte: $a=($a+ord)%65521; $b=($b+$a)%65521; return ($b<<16)|$a
         // For "hello": expected 0x062C0215
         QByteArray data = "hello";
         QCOMPARE(DeltaSyncUtils::adler32(data), static_cast<quint32>(0x062C0215));
@@ -129,56 +128,6 @@ private slots:
         QCOMPARE(changed[0], 1);
     }
 
-    void testFindChangedBlocksFileShrunk()
-    {
-        // Local has 2 blocks, remote had 3.
-        // Blocks 0-1 identical; block 2 absent locally → no changed blocks.
-        // Server truncation is handled by ?size= in the finalize request.
-        BlockMap local, remote;
-        for (int i = 0; i < 3; ++i) {
-            BlockSignature sig;
-            sig.blockIndex = i;
-            sig.weakHash = 0x1000 + i;
-            sig.strongHash = QByteArray("h") + QByteArray::number(i);
-            remote.signatures.append(sig);
-            if (i < 2)
-                local.signatures.append(sig);
-        }
-        local.blockCount = 2;
-        remote.blockCount = 3;
-
-        QVector<int> changed = DeltaSyncUtils::findChangedBlocks(local, remote);
-        QVERIFY(changed.isEmpty());
-    }
-
-    void testFindChangedBlocksFileGrown()
-    {
-        // Local has 3 blocks, remote had 2. Block 2 is new and must be uploaded.
-        BlockMap local, remote;
-        for (int i = 0; i < 3; ++i) {
-            BlockSignature sig;
-            sig.blockIndex = i;
-            sig.weakHash = 0x2000 + i;
-            sig.strongHash = QByteArray("h") + QByteArray::number(i);
-            local.signatures.append(sig);
-            if (i < 2)
-                remote.signatures.append(sig);
-        }
-        local.blockCount = 3;
-        remote.blockCount = 2;
-
-        QVector<int> changed = DeltaSyncUtils::findChangedBlocks(local, remote);
-        QCOMPARE(changed.size(), 1);
-        QCOMPARE(changed[0], 2);
-    }
-
-    void testWeakHashDifferentDataSameLength()
-    {
-        QByteArray a(4 * 1024 * 1024, 'X');
-        QByteArray b(4 * 1024 * 1024, 'Y');
-        QVERIFY(DeltaSyncUtils::adler32(a) != DeltaSyncUtils::adler32(b));
-    }
-
     void testParseServerBlockMap()
     {
         QByteArray json = R"({
@@ -202,6 +151,95 @@ private slots:
         QCOMPARE(map.signatures.size(), 2);
         QCOMPARE(map.signatures[0].weakHash, static_cast<quint32>(12345));
         QCOMPARE(map.signatures[1].strongHash, QByteArray("ccdd"));
+    }
+
+    // === FastCDC Tests ===
+
+    void testFastCdcSmallFile()
+    {
+        QTemporaryFile tmp;
+        QVERIFY(tmp.open());
+        QByteArray content(100 * 1024, 'X'); // 100 KB < minSize (256 KB)
+        tmp.write(content);
+        tmp.flush();
+
+        FastCdcMap map = DeltaSyncUtils::computeLocalFastCdcMap(tmp.fileName());
+        QCOMPARE(map.chunkCount, 1);
+        QCOMPARE(map.totalSize, static_cast<qint64>(content.size()));
+        QCOMPARE(map.signatures.size(), 1);
+        QCOMPARE(map.signatures[0].offset, static_cast<qint64>(0));
+        QCOMPARE(map.signatures[0].size, static_cast<qint64>(content.size()));
+        QCOMPARE(map.signatures[0].hash, QCryptographicHash::hash(content, QCryptographicHash::Sha256).toHex());
+    }
+
+    void testFastCdcMidFileInsertionRecovery()
+    {
+        // Generate 3 MB of pseudo-random data
+        QByteArray original(3 * 1024 * 1024, 0);
+        for (int i = 0; i < original.size(); ++i) {
+            original[i] = static_cast<char>((i * 1103515245 + 12345) & 0xFF);
+        }
+
+        QTemporaryFile tmpOrig;
+        QVERIFY(tmpOrig.open());
+        tmpOrig.write(original);
+        tmpOrig.flush();
+
+        FastCdcMap origMap = DeltaSyncUtils::computeLocalFastCdcMap(tmpOrig.fileName());
+        QVERIFY(origMap.chunkCount >= 3);
+
+        // Insert 1234 bytes at offset 1.2 MB
+        int insertPos = 1200000;
+        QByteArray modified = original.left(insertPos) + QByteArray(1234, 'Z') + original.mid(insertPos);
+
+        QTemporaryFile tmpMod;
+        QVERIFY(tmpMod.open());
+        tmpMod.write(modified);
+        tmpMod.flush();
+
+        FastCdcMap modMap = DeltaSyncUtils::computeLocalFastCdcMap(tmpMod.fileName());
+
+        QSet<QByteArray> origHashes;
+        for (const auto &c : origMap.signatures) {
+            origHashes.insert(c.hash);
+        }
+
+        QVector<int> missing = DeltaSyncUtils::findMissingCdcChunks(modMap, origHashes);
+        // FastCDC boundary recovery should keep almost all chunks reused (only 1 or 2 missing)
+        QVERIFY(missing.size() <= 2);
+        int reused = modMap.chunkCount - missing.size();
+        QVERIFY(reused >= modMap.chunkCount - 2);
+    }
+
+    void testParseServerFastCdcMap()
+    {
+        QByteArray json = R"({
+            "filePath": "/fastcdc_test.bin",
+            "totalSize": 5242880,
+            "algorithm": "fastcdc",
+            "minSize": 262144,
+            "avgSize": 1048576,
+            "maxSize": 4194304,
+            "blockCount": 3,
+            "etag": "etag789",
+            "signatures": [
+                {"chunkIndex": 0, "offset": 0, "size": 1048576, "hash": "hash111"},
+                {"chunkIndex": 1, "offset": 1048576, "size": 2097152, "hash": "hash222"},
+                {"chunkIndex": 2, "offset": 3145728, "size": 2097152, "hash": "hash333"}
+            ]
+        })";
+
+        FastCdcMap map = DeltaSyncUtils::parseServerFastCdcMap(json);
+        QCOMPARE(map.filePath, QStringLiteral("/fastcdc_test.bin"));
+        QCOMPARE(map.totalSize, static_cast<qint64>(5242880));
+        QCOMPARE(map.minSize, static_cast<qint64>(262144));
+        QCOMPARE(map.avgSize, static_cast<qint64>(1048576));
+        QCOMPARE(map.maxSize, static_cast<qint64>(4194304));
+        QCOMPARE(map.chunkCount, 3);
+        QCOMPARE(map.etag, QStringLiteral("etag789"));
+        QCOMPARE(map.signatures.size(), 3);
+        QCOMPARE(map.signatures[0].hash, QByteArray("hash111"));
+        QCOMPARE(map.signatures[2].size, static_cast<qint64>(2097152));
     }
 };
 

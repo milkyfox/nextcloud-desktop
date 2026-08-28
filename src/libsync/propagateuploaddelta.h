@@ -2,18 +2,18 @@
  * SPDX-FileCopyrightText: 2026 CrispCloud Contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Block-level delta sync upload: instead of re-uploading entire files,
- * compute Adler-32 + SHA-256 block maps and upload only changed blocks
+ * Block-level and FastCDC delta sync upload: instead of re-uploading entire files,
+ * compute block maps (Fixed 4MB or FastCDC) and upload only changed blocks/chunks
  * via the crispcloud_delta server app's REST API.
- *
- * Requires the crispcloud_delta Nextcloud/ownCloud app to be installed.
- * Falls back to normal upload if the app is not detected.
  */
 
 #pragma once
 
 #include "propagateupload.h"
 #include "deltasyncutils.h"
+
+#include <QJsonArray>
+#include <QSet>
 
 namespace OCC {
 
@@ -45,9 +45,19 @@ private:
     static constexpr qint64 MinDeltaSyncSize = 10 * 1024 * 1024; // 10 MB
 
     QString _deltaAppBase;
+    bool _useCdc = false;
+
+    // Fixed 4MB state
     BlockMap _localBlockMap;
     BlockMap _remoteBlockMap;
     QVector<int> _changedBlocks;
+
+    // FastCDC state
+    FastCdcMap _localCdcMap;
+    FastCdcMap _remoteCdcMap;
+    QVector<int> _missingCdcChunkIndices;
+    QJsonArray _cdcRecipe;
+
     int _currentBlockIndex = 0;
     bool _deltaAvailable = false;
 };

@@ -261,6 +261,39 @@
        </layout>
       </item>
       <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_deltasync_cdc">
+        <item>
+         <spacer name="horizontalSpacer_deltasync_cdc">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeType">
+           <enum>QSizePolicy::Fixed</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>0</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="deltaSyncCdcCheckBox">
+          <property name="toolTip">
+           <string>Use FastCDC (Content-Defined Chunking) instead of fixed-size blocks. Dynamically adapts to byte insertions/deletions and prevents boundary-shift re-uploads.</string>
+          </property>
+          <property name="text">
+           <string>Enable Content-Defined Chunking (&amp;FastCDC)</string>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
        <layout class="QHBoxLayout" name="horizontalLayout_10">
         <item>
          <widget class="QCheckBox" name="showInExplorerNavigationPaneCheckBox">

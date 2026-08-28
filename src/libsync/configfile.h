@@ -159,6 +159,11 @@ public:
     [[nodiscard]] bool deltaSyncEnabled() const;
     void setDeltaSyncEnabled(bool enabled);
 
+    /** Whether FastCDC (Content-Defined Chunking) is enabled for delta sync.
+     *  When enabled and supported by server, variable-size CDC chunks are used. */
+    [[nodiscard]] bool deltaSyncCdcEnabled() const;
+    void setDeltaSyncCdcEnabled(bool enabled);
+
     [[nodiscard]] bool showMainDialogAsNormalWindow() const;
 
     static bool setConfDir(const QString &value);

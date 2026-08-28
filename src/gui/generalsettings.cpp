@@ -299,7 +299,11 @@ GeneralSettings::GeneralSettings(QWidget *parent)
     connect(_ui->stopExistingFolderNowBigSyncCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
     connect(_ui->newExternalStorage, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
     connect(_ui->moveFilesToTrashCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
-    connect(_ui->deltaSyncCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
+    connect(_ui->deltaSyncCheckBox, &QAbstractButton::toggled, this, [this](bool checked) {
+        _ui->deltaSyncCdcCheckBox->setEnabled(checked);
+        saveMiscSettings();
+    });
+    connect(_ui->deltaSyncCdcCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
     connect(_ui->remotePollIntervalSpinBox, &QSpinBox::valueChanged, this, &GeneralSettings::slotRemotePollIntervalChanged);
 
     // Hide on non-Windows, or WindowsVersion < 10.
@@ -370,6 +374,8 @@ void GeneralSettings::loadMiscSettings()
     _ui->monoIconsCheckBox->setChecked(cfgFile.monoIcons());
     _ui->moveFilesToTrashCheckBox->setChecked(cfgFile.moveToTrash());
     _ui->deltaSyncCheckBox->setChecked(cfgFile.deltaSyncEnabled());
+    _ui->deltaSyncCdcCheckBox->setEnabled(cfgFile.deltaSyncEnabled());
+    _ui->deltaSyncCdcCheckBox->setChecked(cfgFile.deltaSyncCdcEnabled());
 
     auto newFolderLimit = cfgFile.newBigFolderSizeLimit();
     _ui->newFolderLimitCheckBox->setChecked(newFolderLimit.first);
@@ -642,6 +648,8 @@ void GeneralSettings::saveMiscSettings()
     cfgFile.setMonoIcons(useMonoIcons);
     cfgFile.setMoveToTrash(_ui->moveFilesToTrashCheckBox->isChecked());
     cfgFile.setDeltaSyncEnabled(_ui->deltaSyncCheckBox->isChecked());
+    cfgFile.setDeltaSyncCdcEnabled(_ui->deltaSyncCdcCheckBox->isChecked());
+    _ui->deltaSyncCdcCheckBox->setEnabled(_ui->deltaSyncCheckBox->isChecked());
     cfgFile.setNewBigFolderSizeLimit(newFolderLimitEnabled, _ui->newFolderLimitSpinBox->value());
     cfgFile.setConfirmExternalStorage(_ui->newExternalStorage->isChecked());
     cfgFile.setNotifyExistingFoldersOverLimit(existingFolderLimitEnabled);
