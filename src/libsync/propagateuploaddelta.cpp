@@ -75,16 +75,27 @@ void PropagateUploadFileDelta::slotStatusCheckFinished()
         fallbackToNormalUpload();
         return;
     }
-    slotJobDestroyed(job);
 
     auto reply = job->reply();
+    if (reply->error() == QNetworkReply::OperationCanceledError || propagator()->_abortRequested) {
+        slotJobDestroyed(job);
+        job->deleteLater();
+        done(SyncFileItem::SoftError, tr("Sync aborted by user."));
+        return;
+    }
+
     if (reply->error() != QNetworkReply::NoError || reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 200) {
+        slotJobDestroyed(job);
+        job->deleteLater();
         qCInfo(lcPropagateUploadDelta) << "Delta sync app not available, falling back to normal upload";
         fallbackToNormalUpload();
         return;
     }
 
     QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    slotJobDestroyed(job);
+    job->deleteLater();
+
     if (doc.isNull() || doc.object()[QStringLiteral("app")].toString() != QStringLiteral("crispcloud_delta")) {
         qCInfo(lcPropagateUploadDelta) << "Delta sync app response invalid, falling back";
         fallbackToNormalUpload();
@@ -146,24 +157,36 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
         fallbackToNormalUpload();
         return;
     }
-    slotJobDestroyed(job);
 
     auto reply = job->reply();
+    if (reply->error() == QNetworkReply::OperationCanceledError || propagator()->_abortRequested) {
+        slotJobDestroyed(job);
+        job->deleteLater();
+        done(SyncFileItem::SoftError, tr("Sync aborted by user."));
+        return;
+    }
+
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (httpCode == 404) {
+        slotJobDestroyed(job);
+        job->deleteLater();
         qCInfo(lcPropagateUploadDelta) << "Remote file not found (new file), falling back to normal upload";
         fallbackToNormalUpload();
         return;
     }
 
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
+        slotJobDestroyed(job);
+        job->deleteLater();
         qCWarning(lcPropagateUploadDelta) << "Failed to fetch remote block map, HTTP" << httpCode;
         fallbackToNormalUpload();
         return;
     }
 
     QByteArray body = reply->readAll();
+    slotJobDestroyed(job);
+    job->deleteLater();
 
     if (_useCdc) {
         // === FastCDC Mode ===
@@ -497,16 +520,27 @@ void PropagateUploadFileDelta::slotBlockUploaded()
         fallbackToNormalUpload();
         return;
     }
-    slotJobDestroyed(job);
 
     auto reply = job->reply();
+    if (reply->error() == QNetworkReply::OperationCanceledError || propagator()->_abortRequested) {
+        slotJobDestroyed(job);
+        job->deleteLater();
+        done(SyncFileItem::SoftError, tr("Sync aborted by user."));
+        return;
+    }
+
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
+        slotJobDestroyed(job);
+        job->deleteLater();
         qCWarning(lcPropagateUploadDelta) << "Block/chunk upload failed, HTTP" << httpCode;
         fallbackToNormalUpload();
         return;
     }
+
+    slotJobDestroyed(job);
+    job->deleteLater();
 
     if (_useCdc) {
         if (_currentBlockIndex < _missingCdcChunkIndices.size()) {
@@ -536,12 +570,20 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         fallbackToNormalUpload();
         return;
     }
-    slotJobDestroyed(job);
 
     auto reply = job->reply();
+    if (reply->error() == QNetworkReply::OperationCanceledError || propagator()->_abortRequested) {
+        slotJobDestroyed(job);
+        job->deleteLater();
+        done(SyncFileItem::SoftError, tr("Sync aborted by user."));
+        return;
+    }
+
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
+        slotJobDestroyed(job);
+        job->deleteLater();
         qCWarning(lcPropagateUploadDelta) << "Finalize failed, HTTP" << httpCode;
         fallbackToNormalUpload();
         return;
@@ -549,6 +591,9 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
 
     // Extract new ETag and FileId from server response to ensure DB consistency
     QByteArray body = reply->readAll();
+    slotJobDestroyed(job);
+    job->deleteLater();
+
     QJsonDocument doc = QJsonDocument::fromJson(body);
     if (doc.isObject()) {
         QString etagStr = doc.object().value(QStringLiteral("etag")).toString();
@@ -558,18 +603,6 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         QString fid = doc.object().value(QStringLiteral("fileId")).toString();
         if (!fid.isEmpty()) {
             _item->_fileId = fid.toUtf8();
-        }
-        if (doc.object().contains(QStringLiteral("mtime"))) {
-            qint64 mtime = doc.object().value(QStringLiteral("mtime")).toVariant().toLongLong();
-            if (mtime > 0) {
-                _item->_modtime = mtime;
-            }
-        }
-        if (doc.object().contains(QStringLiteral("size"))) {
-            qint64 size = doc.object().value(QStringLiteral("size")).toVariant().toLongLong();
-            if (size > 0) {
-                _item->_size = size;
-            }
         }
     }
     if (_item->_etag.isEmpty()) {
@@ -637,9 +670,7 @@ void PropagateUploadFileDelta::fallbackToNormalUpload()
     }
     _fallbackJob->setDeleteExisting(_deleteExisting);
 
-    connect(_fallbackJob.get(), &PropagatorJob::finished, this, [this](SyncFileItem::Status status) {
-        done(status, _item->_errorString);
-    });
+    connect(_fallbackJob.get(), &PropagatorJob::finished, this, &PropagatorJob::finished);
 
     _fallbackJob->start();
 }
