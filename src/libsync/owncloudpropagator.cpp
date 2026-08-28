@@ -413,10 +413,11 @@ std::unique_ptr<PropagateUploadFileCommon> OwncloudPropagator::createUploadJob(S
 {
     auto job = std::unique_ptr<PropagateUploadFileCommon>{};
 
-    // Try block-level delta sync for large files when enabled in settings
-    // and the server app is available. Falls back to normal upload if unavailable.
+    // Try block-level delta sync for large files when enabled in settings,
+    // the server app is available, and the file is an update to an existing file.
     static constexpr qint64 deltaSyncMinSize = 10 * 1024 * 1024; // 10 MB
     if (item->_size >= deltaSyncMinSize
+        && item->_instruction != CSYNC_INSTRUCTION_NEW
         && ConfigFile().deltaSyncEnabled()
         && account()->capabilities().deltaSyncAvailable()) {
         job = std::make_unique<PropagateUploadFileDelta>(this, item);

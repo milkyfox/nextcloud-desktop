@@ -60,6 +60,7 @@ private:
 
     int _currentBlockIndex = 0;
     bool _deltaAvailable = false;
+    std::unique_ptr<PropagateUploadFileCommon> _fallbackJob;
 };
 
 } // namespace OCC

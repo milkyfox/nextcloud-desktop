@@ -488,19 +488,27 @@ void PropagateUploadFileDelta::fallbackToNormalUpload()
 {
     qCInfo(lcPropagateUploadDelta) << "Falling back to normal upload for" << _item->_file;
 
-    std::unique_ptr<PropagateUploadFileCommon> job;
     if (_item->_size > propagator()->syncOptions()._initialChunkSize
         && propagator()->account()->capabilities().chunkingNg()) {
-        job = std::make_unique<PropagateUploadFileNG>(propagator(), _item);
+        _fallbackJob = std::make_unique<PropagateUploadFileNG>(propagator(), _item);
     } else {
-        job = std::make_unique<PropagateUploadFileV1>(propagator(), _item);
+        _fallbackJob = std::make_unique<PropagateUploadFileV1>(propagator(), _item);
     }
-    job->setDeleteExisting(false);
-    job->start();
+    _fallbackJob->setDeleteExisting(_deleteExisting);
+
+    connect(_fallbackJob.get(), &PropagateItemJob::finished, this, [this](SyncFileItem::Status status) {
+        done(status, _fallbackJob->item()->_errorString);
+    });
+    connect(_fallbackJob.get(), &PropagateItemJob::progress, this, &PropagateItemJob::progress);
+
+    _fallbackJob->start();
 }
 
 void PropagateUploadFileDelta::abort(PropagatorJob::AbortType abortType)
 {
+    if (_fallbackJob) {
+        _fallbackJob->abort(abortType);
+    }
     abortNetworkJobs(abortType,
         [](AbstractNetworkJob *) { return true; });
 }
