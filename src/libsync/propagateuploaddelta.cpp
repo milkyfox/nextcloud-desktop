@@ -35,7 +35,7 @@ static QString getDeltaRemotePath(const OwncloudPropagator *propagator, const QS
     while (full.startsWith(QLatin1Char('/'))) {
         full.remove(0, 1);
     }
-    return QString::fromUtf8(QUrl::toPercentEncoding(full, "/"));
+    return full;
 }
 
 PropagateUploadFileDelta::PropagateUploadFileDelta(OwncloudPropagator *propagator, const SyncFileItemPtr &item)
@@ -116,22 +116,25 @@ void PropagateUploadFileDelta::slotStatusCheckFinished()
                                    << (_useCdc ? "FastCDC" : "Fixed") << "), fetching block map for"
                                    << _fileToUpload._file;
 
-    // Fetch remote block map
+    // Fetch remote block map via query routing to support all characters and web servers
     auto url = propagator()->account()->url();
-    QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
-    url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blockmap/") + remotePath);
+    url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blockmap"));
 
+    QUrlQuery query;
+    QString remotePath = QStringLiteral("/") + getDeltaRemotePath(propagator(), _item->_file);
+    query.addQueryItem(QStringLiteral("path"), remotePath);
     if (_useCdc) {
-        QUrlQuery query;
         query.addQueryItem(QStringLiteral("algo"), QStringLiteral("fastcdc"));
-        url.setQuery(query);
     }
+    url.setQuery(query);
 
     auto *bmJob = new SimpleNetworkJob(propagator()->account(), this);
     _jobs.append(bmJob);
     connect(bmJob, &QObject::destroyed, this, &PropagateUploadFileCommon::slotJobDestroyed);
     QNetworkRequest req;
     req.setUrl(url);
+    req.setRawHeader("OCS-APIREQUEST", "true");
+    req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
     bmJob->startRequest("GET", url, req);
     connect(bmJob, &SimpleNetworkJob::finishedSignal, this, &PropagateUploadFileDelta::slotBlockMapFetched);
 }
@@ -203,6 +206,9 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
 
         if (_missingCdcChunkIndices.isEmpty() && _localCdcMap.totalSize == _remoteCdcMap.totalSize) {
             qCInfo(lcPropagateUploadDelta) << "File is identical (FastCDC), no upload needed:" << _item->_file;
+            if (!_remoteCdcMap.etag.isEmpty()) {
+                _item->_etag = parseEtag(_remoteCdcMap.etag.toUtf8().constData());
+            }
             finalize();
             return;
         }
@@ -248,6 +254,9 @@ void PropagateUploadFileDelta::slotBlockMapFetched()
 
         if (_changedBlocks.isEmpty() && _localBlockMap.totalSize == _remoteBlockMap.totalSize) {
             qCInfo(lcPropagateUploadDelta) << "File is identical, no upload needed:" << _item->_file;
+            if (!_remoteBlockMap.etag.isEmpty()) {
+                _item->_etag = parseEtag(_remoteBlockMap.etag.toUtf8().constData());
+            }
             finalize();
             return;
         }
@@ -288,8 +297,11 @@ void PropagateUploadFileDelta::uploadNextBlock()
         if (_currentBlockIndex >= _missingCdcChunkIndices.size()) {
             // All CDC chunks uploaded — finalize with Recipe
             auto url = propagator()->account()->url();
-            QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
-            url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/finalize/") + remotePath);
+            url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/finalize"));
+            QUrlQuery query;
+            QString remotePath = QStringLiteral("/") + getDeltaRemotePath(propagator(), _item->_file);
+            query.addQueryItem(QStringLiteral("path"), remotePath);
+            url.setQuery(query);
 
             QJsonObject finalizePayload;
             finalizePayload[QStringLiteral("recipe")] = _cdcRecipe;
@@ -305,6 +317,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
             req.setUrl(url);
             req.setRawHeader("Content-Type", "application/json");
             req.setRawHeader("OCS-APIREQUEST", "true");
+            req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
             req.setRawHeader("X-OC-Mtime", QByteArray::number(qint64(_item->_modtime)));
             if (!_remoteCdcMap.etag.isEmpty()) {
                 req.setRawHeader("If-Match", '"' + _remoteCdcMap.etag.toUtf8() + '"');
@@ -349,9 +362,10 @@ void PropagateUploadFileDelta::uploadNextBlock()
                                         << "size=" << chunk.size;
 
         auto url = propagator()->account()->url();
-        QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
-        url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blocks/") + remotePath);
+        url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blocks"));
         QUrlQuery query;
+        QString remotePath = QStringLiteral("/") + getDeltaRemotePath(propagator(), _item->_file);
+        query.addQueryItem(QStringLiteral("path"), remotePath);
         query.addQueryItem(QStringLiteral("hash"), QString::fromLatin1(chunk.hash));
         query.addQueryItem(QStringLiteral("size"), QString::number(chunk.size));
         url.setQuery(query);
@@ -364,6 +378,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
         req.setUrl(url);
         req.setRawHeader("Content-Type", "application/octet-stream");
         req.setRawHeader("OCS-APIREQUEST", "true");
+        req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
 
         auto *buffer = new QBuffer(this);
         buffer->setData(chunkData);
@@ -375,10 +390,11 @@ void PropagateUploadFileDelta::uploadNextBlock()
         // === Legacy Fixed 4MB Flow ===
         if (_currentBlockIndex >= _changedBlocks.size()) {
             auto url = propagator()->account()->url();
-            QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
-            url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/finalize/") + remotePath);
+            url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/finalize"));
 
             QUrlQuery finalizeQuery;
+            QString remotePath = QStringLiteral("/") + getDeltaRemotePath(propagator(), _item->_file);
+            finalizeQuery.addQueryItem(QStringLiteral("path"), remotePath);
             finalizeQuery.addQueryItem(QStringLiteral("size"), QString::number(_localBlockMap.totalSize));
             url.setQuery(finalizeQuery);
 
@@ -390,6 +406,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
             QNetworkRequest req;
             req.setUrl(url);
             req.setRawHeader("OCS-APIREQUEST", "true");
+            req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
             req.setRawHeader("X-OC-Mtime", QByteArray::number(qint64(_item->_modtime)));
             if (!_remoteBlockMap.etag.isEmpty()) {
                 req.setRawHeader("If-Match", '"' + _remoteBlockMap.etag.toUtf8() + '"');
@@ -429,9 +446,10 @@ void PropagateUploadFileDelta::uploadNextBlock()
                                         << "size=" << sig.size;
 
         auto url = propagator()->account()->url();
-        QString remotePath = getDeltaRemotePath(propagator(), _item->_file);
-        url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blocks/") + remotePath);
+        url.setPath(url.path() + _deltaAppBase + QStringLiteral("/api/blocks"));
         QUrlQuery query;
+        QString remotePath = QStringLiteral("/") + getDeltaRemotePath(propagator(), _item->_file);
+        query.addQueryItem(QStringLiteral("path"), remotePath);
         query.addQueryItem(QStringLiteral("offset"), QString::number(sig.offset));
         query.addQueryItem(QStringLiteral("size"), QString::number(sig.size));
         url.setQuery(query);
@@ -444,6 +462,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
         req.setUrl(url);
         req.setRawHeader("Content-Type", "application/octet-stream");
         req.setRawHeader("OCS-APIREQUEST", "true");
+        req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
 
         auto *buffer = new QBuffer(this);
         buffer->setData(blockData);
@@ -577,6 +596,9 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
 void PropagateUploadFileDelta::fallbackToNormalUpload()
 {
     qCInfo(lcPropagateUploadDelta) << "Falling back to normal upload for" << _item->_file;
+
+    abortNetworkJobs(PropagatorJob::AbortType::Asynchronous,
+        [](AbstractNetworkJob *) { return true; });
 
     if (_item->_size > propagator()->syncOptions()._initialChunkSize
         && propagator()->account()->capabilities().chunkingNg()) {
