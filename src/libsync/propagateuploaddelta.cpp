@@ -294,6 +294,9 @@ void PropagateUploadFileDelta::uploadNextBlock()
             req.setUrl(url);
             req.setRawHeader("Content-Type", "application/json");
             req.setRawHeader("OCS-APIREQUEST", "true");
+            if (!_remoteCdcMap.etag.isEmpty()) {
+                req.setRawHeader("If-Match", '"' + _remoteCdcMap.etag.toUtf8() + '"');
+            }
 
             auto *buffer = new QBuffer(this);
             buffer->setData(jsonBody);
@@ -372,6 +375,9 @@ void PropagateUploadFileDelta::uploadNextBlock()
             QNetworkRequest req;
             req.setUrl(url);
             req.setRawHeader("OCS-APIREQUEST", "true");
+            if (!_remoteBlockMap.etag.isEmpty()) {
+                req.setRawHeader("If-Match", '"' + _remoteBlockMap.etag.toUtf8() + '"');
+            }
             finalizeJob->startRequest("POST", url, req);
             connect(finalizeJob, &SimpleNetworkJob::finishedSignal, this, &PropagateUploadFileDelta::slotFinalizeFinished);
             return;
