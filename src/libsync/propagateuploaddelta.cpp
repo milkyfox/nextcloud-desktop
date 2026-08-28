@@ -33,7 +33,7 @@ static QString getDeltaRemotePath(const OwncloudPropagator *propagator, const QS
     while (full.startsWith(QLatin1Char('/'))) {
         full.remove(0, 1);
     }
-    return full;
+    return QString::fromUtf8(QUrl::toPercentEncoding(full, "/"));
 }
 
 PropagateUploadFileDelta::PropagateUploadFileDelta(OwncloudPropagator *propagator, const SyncFileItemPtr &item)
