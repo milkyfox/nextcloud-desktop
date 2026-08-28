@@ -496,10 +496,9 @@ void PropagateUploadFileDelta::fallbackToNormalUpload()
     }
     _fallbackJob->setDeleteExisting(_deleteExisting);
 
-    connect(_fallbackJob.get(), &PropagateItemJob::finished, this, [this](SyncFileItem::Status status) {
-        done(status, _fallbackJob->item()->_errorString);
+    connect(_fallbackJob.get(), &PropagatorJob::finished, this, [this](SyncFileItem::Status status) {
+        done(status, _item->_errorString);
     });
-    connect(_fallbackJob.get(), &PropagateItemJob::progress, this, &PropagateItemJob::progress);
 
     _fallbackJob->start();
 }
