@@ -323,7 +323,7 @@ void PropagateUploadFileDelta::uploadNextBlock()
                 req.setRawHeader("If-Match", '"' + _remoteCdcMap.etag.toUtf8() + '"');
             }
 
-            auto *buffer = new QBuffer(this);
+            auto *buffer = new QBuffer(finalizeJob);
             buffer->setData(jsonBody);
             buffer->open(QIODevice::ReadOnly);
 
@@ -379,8 +379,11 @@ void PropagateUploadFileDelta::uploadNextBlock()
         req.setRawHeader("Content-Type", "application/octet-stream");
         req.setRawHeader("OCS-APIREQUEST", "true");
         req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
+        if (!_remoteCdcMap.etag.isEmpty()) {
+            req.setRawHeader("If-Match", '"' + _remoteCdcMap.etag.toUtf8() + '"');
+        }
 
-        auto *buffer = new QBuffer(this);
+        auto *buffer = new QBuffer(putJob);
         buffer->setData(chunkData);
         buffer->open(QIODevice::ReadOnly);
 
@@ -463,8 +466,11 @@ void PropagateUploadFileDelta::uploadNextBlock()
         req.setRawHeader("Content-Type", "application/octet-stream");
         req.setRawHeader("OCS-APIREQUEST", "true");
         req.setRawHeader("X-File-Path", QUrl::toPercentEncoding(remotePath));
+        if (!_remoteBlockMap.etag.isEmpty()) {
+            req.setRawHeader("If-Match", '"' + _remoteBlockMap.etag.toUtf8() + '"');
+        }
 
-        auto *buffer = new QBuffer(this);
+        auto *buffer = new QBuffer(putJob);
         buffer->setData(blockData);
         buffer->open(QIODevice::ReadOnly);
 
