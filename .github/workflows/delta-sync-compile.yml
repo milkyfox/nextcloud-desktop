@@ -249,7 +249,7 @@ jobs:
     if: always() && github.ref == 'refs/heads/delta-sync'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
