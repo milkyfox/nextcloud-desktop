@@ -531,6 +531,14 @@ void PropagateUploadFileDelta::slotBlockUploaded()
 
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
+    if (httpCode == 507 || httpCode == 401 || httpCode == 403 || httpCode == 423) {
+        slotJobDestroyed(job);
+        job->deleteLater();
+        _item->_httpErrorCode = httpCode;
+        commonErrorHandling(job);
+        return;
+    }
+
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
         slotJobDestroyed(job);
         job->deleteLater();
@@ -581,6 +589,14 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
 
     int httpCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
+    if (httpCode == 507 || httpCode == 401 || httpCode == 403 || httpCode == 423) {
+        slotJobDestroyed(job);
+        job->deleteLater();
+        _item->_httpErrorCode = httpCode;
+        commonErrorHandling(job);
+        return;
+    }
+
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
         slotJobDestroyed(job);
         job->deleteLater();
@@ -591,6 +607,8 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
 
     // Extract new ETag and FileId from server response to ensure DB consistency
     QByteArray body = reply->readAll();
+    QByteArray replyEtag = getEtagFromReply(reply);
+    QByteArray replyFileId = reply->rawHeader("OC-FileId");
     slotJobDestroyed(job);
     job->deleteLater();
 
@@ -606,10 +624,10 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
         }
     }
     if (_item->_etag.isEmpty()) {
-        _item->_etag = getEtagFromReply(reply);
+        _item->_etag = replyEtag;
     }
     if (_item->_fileId.isEmpty()) {
-        _item->_fileId = reply->rawHeader("OC-FileId");
+        _item->_fileId = replyFileId;
     }
 
     if (_useCdc) {
@@ -671,6 +689,7 @@ void PropagateUploadFileDelta::fallbackToNormalUpload()
     _fallbackJob->setDeleteExisting(_deleteExisting);
 
     connect(_fallbackJob.get(), &PropagatorJob::finished, this, &PropagatorJob::finished);
+    connect(_fallbackJob.get(), &PropagatorJob::abortFinished, this, &PropagatorJob::abortFinished);
 
     _fallbackJob->start();
 }
@@ -679,6 +698,7 @@ void PropagateUploadFileDelta::abort(PropagatorJob::AbortType abortType)
 {
     if (_fallbackJob) {
         _fallbackJob->abort(abortType);
+        return;
     }
     abortNetworkJobs(abortType,
         [](AbstractNetworkJob *) { return true; });
