@@ -1298,7 +1298,7 @@ void User::processCompletedSyncItem(const Folder *folder, const SyncFileItemPtr 
                 showDesktopNotification(
                     tr("Delta sync: %1").arg(fileName),
                     item->_deltaSyncInfo,
-                    -static_cast<qint64>(qHash(QStringLiteral("delta:") + item->_file)));
+                    -static_cast<qint64>(qHash(QStringLiteral("delta:") + item->_file + QString::number(item->_modtime))));
             }
         }
 
