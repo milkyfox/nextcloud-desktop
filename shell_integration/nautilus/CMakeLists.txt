@@ -5,34 +5,24 @@
 # be changed.
 if( UNIX AND NOT APPLE )
 
-    configure_file(syncstate.py syncstate.py COPYONLY)
+    # Read base syncstate.py template
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/syncstate.py" SYNCSTATE_CONTENT)
 
-    # Call the setupappname.sh script to set the custom app name.
-    set (cmd "${CMAKE_CURRENT_SOURCE_DIR}/setappname.sh")
-    execute_process(COMMAND ${cmd} ${APPLICATION_SHORTNAME}
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-                    ERROR_VARIABLE errors OUTPUT_VARIABLE out)
+    # 1. Replace Nextcloud with custom branding app name
+    string(REPLACE "Nextcloud" "${APPLICATION_SHORTNAME}" SYNCSTATE_APP_CONTENT "${SYNCSTATE_CONTENT}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/syncstate.py" "${SYNCSTATE_APP_CONTENT}")
 
-    # Create a nemo plugin script from the nautilus one. 
-    # nemocmd copies the syncstate.py and performs string replacement.
-    set (nemocmd "${CMAKE_CURRENT_SOURCE_DIR}/createnemoplugin.sh")
-    execute_process(COMMAND ${nemocmd}
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-                    ERROR_VARIABLE errors OUTPUT_VARIABLE out)
+    # 2. Create nemo plugin by replacing Nautilus -> Nemo (autilus -> emo)
+    string(REPLACE "autilus" "emo" SYNCSTATE_NEMO_CONTENT "${SYNCSTATE_APP_CONTENT}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/syncstate_nemo.py" "${SYNCSTATE_NEMO_CONTENT}")
 
-    # Create a caja plugin script from the nautilus one. 
-    # cajacmd copies the syncstate.py and performs string replacement.
-    set (cajacmd "${CMAKE_CURRENT_SOURCE_DIR}/createcajaplugin.sh")
-    execute_process(COMMAND ${cajacmd}
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-                    ERROR_VARIABLE errors OUTPUT_VARIABLE out)
+    # 3. Create caja plugin by replacing Nautilus -> Caja (autilus -> aja)
+    string(REPLACE "autilus" "aja" SYNCSTATE_CAJA_CONTENT "${SYNCSTATE_APP_CONTENT}")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/syncstate_caja.py" "${SYNCSTATE_CAJA_CONTENT}")
 
-                                        
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/syncstate.py DESTINATION ${CMAKE_INSTALL_DATADIR}/nautilus-python/extensions RENAME syncstate-${APPLICATION_SHORTNAME}.py)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/syncstate_nemo.py DESTINATION ${CMAKE_INSTALL_DATADIR}/nemo-python/extensions RENAME syncstate-${APPLICATION_SHORTNAME}.py)
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/syncstate_caja.py DESTINATION ${CMAKE_INSTALL_DATADIR}/caja-python/extensions RENAME syncstate-${APPLICATION_SHORTNAME}.py)
-    
-    
 
 endif()
 
