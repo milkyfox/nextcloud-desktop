@@ -62,14 +62,10 @@ jobs:
       CRAFT_TARGET: windows-msvc2022_64-cl
       CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
       CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster.ini
-      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Setup sccache
-        uses: mozilla/sccache-action@v0.0.8
 
       - uses: actions/setup-python@v5
         with:
@@ -96,9 +92,6 @@ jobs:
 
       - name: Compile
         shell: pwsh
-        env:
-          CMAKE_C_COMPILER_LAUNCHER: "sccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "sccache"
         run: |
           function craft() {
               python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
