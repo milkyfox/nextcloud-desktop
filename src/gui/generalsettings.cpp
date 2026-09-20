@@ -65,31 +65,6 @@ GeneralSettings::GeneralSettings(QWidget *parent)
 
     connect(_ui->monoIconsCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
     connect(_ui->deltaSyncCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
-    connect(_ui->remotePollIntervalSpinBox, &QSpinBox::valueChanged, this, &GeneralSettings::slotRemotePollIntervalChanged);
-
-    // Hide on non-Windows, or WindowsVersion < 10.
-    // The condition should match the default value of ConfigFile::showInExplorerNavigationPane.
-#ifdef Q_OS_WIN
-        if (QOperatingSystemVersion::current() < QOperatingSystemVersion::Windows10)
-            _ui->showInExplorerNavigationPaneCheckBox->setVisible(false);
-#else
-    // Hide on non-Windows
-    _ui->showInExplorerNavigationPaneCheckBox->setVisible(false);
-#endif
-
-    /* Set the left contents margin of the layout to zero to make the checkboxes
-     * align properly vertically , fixes bug #3758
-     */
-    int m0 = 0;
-    int m1 = 0;
-    int m2 = 0;
-    int m3 = 0;
-    _ui->horizontalLayout_3->getContentsMargins(&m0, &m1, &m2, &m3);
-    _ui->horizontalLayout_3->setContentsMargins(0, m1, m2, m3);
-
-    // OEM themes are not obliged to ship mono icons, so there
-    // is no point in offering an option
-    _ui->monoIconsCheckBox->setVisible(Theme::instance()->monoIconsAvailable());
 
     // accountAdded means the wizard was finished and the wizard might change some options.
     connect(AccountManager::instance(), &AccountManager::accountAdded, this, &GeneralSettings::loadMiscSettings);
