@@ -20,6 +20,7 @@
 #if !DISABLE_ACCOUNT_MIGRATION
 #include "legacyaccountselectiondialog.h"
 #endif
+#include "settings/migration.h"
 
 #include <QSettings>
 #include <QDir>
@@ -36,6 +37,7 @@ constexpr auto authTypeC = "authType";
 constexpr auto userC = "user";
 constexpr auto displayNameC = "displayName";
 constexpr auto httpUserC = "http_user";
+constexpr auto accountUuidC = "account_uuid";
 constexpr auto davUserC = "dav_user";
 constexpr auto webflowUserC = "webflow_user";
 constexpr auto shibbolethUserC = "shibboleth_shib_user";
@@ -69,11 +71,6 @@ constexpr auto webflowAuthPrefix = "webflow_";
 
 constexpr auto networkProxyPasswordKeychainKeySuffixC = "_proxy_password";
 
-constexpr auto legacyRelativeConfigLocationC = "/ownCloud/owncloud.cfg";
-constexpr auto legacyCfgFileNameC = "owncloud.cfg";
-
-constexpr auto unbrandedRelativeConfigLocationC = "/Nextcloud/nextcloud.cfg";
-constexpr auto unbrandedCfgFileNameC = "nextcloud.cfg";
 
 // The maximum versions that this client can read
 constexpr auto maxAccountsVersion = 13;
@@ -84,7 +81,6 @@ constexpr auto serverDesktopEnterpriseUpdateChannelC = "desktopEnterpriseChannel
 
 constexpr auto generalC = "General";
 }
-
 
 namespace OCC {
 
@@ -111,7 +107,7 @@ AccountManager::AccountsRestoreResult AccountManager::restore(const bool alsoRes
     if (skipSettingsKeys.contains(settings->group())) {
         // Should not happen: bad container keys should have been deleted
         qCWarning(lcAccountManager) << "Accounts structure is too new, ignoring";
-        emit(accountListInitialized());
+        Q_EMIT accountListInitialized();
         return AccountsRestoreSuccessWithSkipped;
     }
 
@@ -122,13 +118,13 @@ AccountManager::AccountsRestoreResult AccountManager::restore(const bool alsoRes
             return AccountsNotFound;
         }
 
-        emit(accountListInitialized());
+        Q_EMIT accountListInitialized();
         return AccountsRestoreSuccessFromLegacyVersion;
     }
 #endif
 
     if (settings->childGroups().isEmpty()) {
-        emit(accountListInitialized());
+        Q_EMIT accountListInitialized();
         return AccountsNotFound;
     }
 
@@ -158,7 +154,7 @@ AccountManager::AccountsRestoreResult AccountManager::restore(const bool alsoRes
         }
     }
 
-    emit(accountListInitialized());
+    Q_EMIT accountListInitialized();
 
     ConfigFile().cleanupGlobalNetworkConfiguration();
     ClientProxy().cleanupGlobalNetworkConfiguration();   
@@ -195,110 +191,70 @@ bool AccountManager::restoreFromLegacySettings()
 {
     qCInfo(lcAccountManager) << "Migrate: restoreFromLegacySettings, checking settings group"
                              << Theme::instance()->appName();
-
     // try to open the correctly themed settings
     auto settings = ConfigFile::settingsWithGroup(Theme::instance()->appName());
-
     auto wasLegacyImportDialogDisplayed = false;
-    const auto displayLegacyImportDialog = Theme::instance()->displayLegacyImportDialog();
     QStringList selectedAccountIds;
+    if (auto legacyData = Migration::legacyData(); legacyData) {
 
-    // if the settings file could not be opened, the childKeys list is empty
-    // then try to load settings from a very old place
-    if (settings->childKeys().isEmpty()) {
-        // Legacy settings used QDesktopServices to get the location for the config folder in 2.4 and before
-        const auto legacy2_4CfgSettingsLocation = QString(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/data"));
-        const auto legacy2_4CfgFileParentFolder = legacy2_4CfgSettingsLocation.left(legacy2_4CfgSettingsLocation.lastIndexOf('/'));
+        const auto displayLegacyImportDialog = Theme::instance()->displayLegacyImportDialog();
 
-        // 2.5+ (rest of 2.x series)
-        const auto legacy2_5CfgSettingsLocation = QStandardPaths::writableLocation(Utility::isWindows() ? QStandardPaths::AppDataLocation : QStandardPaths::AppConfigLocation);
-        const auto legacy2_5CfgFileParentFolder = legacy2_5CfgSettingsLocation.left(legacy2_5CfgSettingsLocation.lastIndexOf('/'));
+        auto oCSettings = std::move(legacyData);
 
-        // Now try the locations we use today
-        const auto fullLegacyCfgFile = QDir::fromNativeSeparators(settings->fileName());
-        const auto legacyCfgFileParentFolder = fullLegacyCfgFile.left(fullLegacyCfgFile.lastIndexOf('/'));
-        const auto legacyCfgFileGrandParentFolder = legacyCfgFileParentFolder.left(legacyCfgFileParentFolder.lastIndexOf('/'));
+        oCSettings->beginGroup(QLatin1String(accountsC));
+        const auto childGroups = oCSettings->childGroups();
+        const auto accountsListSize = childGroups.size();
+        oCSettings->endGroup(); // accountsC
 
-        const auto legacyCfgFileNamePath = QString(QStringLiteral("/") + legacyCfgFileNameC);
-        const auto legacyCfgFileRelativePath = QString(legacyRelativeConfigLocationC);
-
-        auto legacyLocations = QVector<QString>{legacy2_4CfgFileParentFolder + legacyCfgFileRelativePath,
-                                                legacy2_5CfgFileParentFolder + legacyCfgFileRelativePath,
-                                                legacyCfgFileParentFolder + legacyCfgFileNamePath,
-                                                legacyCfgFileGrandParentFolder + legacyCfgFileRelativePath};
-
-        if (Theme::instance()->isBranded()) {
-            const auto unbrandedCfgFileNamePath = QString(QStringLiteral("/") + unbrandedCfgFileNameC);
-            const auto unbrandedCfgFileRelativePath = QString(unbrandedRelativeConfigLocationC);
-            legacyLocations.append({legacyCfgFileParentFolder + unbrandedCfgFileNamePath, legacyCfgFileGrandParentFolder + unbrandedCfgFileRelativePath});
-        }
-
-        for (const auto &configFile : std::as_const(legacyLocations)) {
-            auto oCSettings = std::make_unique<QSettings>(configFile, QSettings::IniFormat);
-            if (oCSettings->status() != QSettings::Status::NoError) {
-                qCInfo(lcAccountManager) << "Error reading legacy configuration file" << oCSettings->status();
-                break;
-            }
-
-            oCSettings->beginGroup(QLatin1String(accountsC));
-            const auto childGroups = oCSettings->childGroups();
-            const auto accountsListSize = childGroups.size();
-            oCSettings->endGroup(); //accountsC
-            if (const QFileInfo configFileInfo(configFile);
-                configFileInfo.exists() && configFileInfo.isReadable()) {
-
-                qCInfo(lcAccountManager) << "Migrate: checking old config " << configFile;
-                if (!forceLegacyImport() && accountsListSize > 0 && displayLegacyImportDialog) {
-                    wasLegacyImportDialogDisplayed = true;
-                    if (accountsListSize == 1) {
-                        const auto importQuestion =
-                            tr("An account was detected from a legacy desktop client.\n"
-                               "Should the account be imported?");
-                        QMessageBox importMessageBox(QMessageBox::Question, tr("Legacy import"), importQuestion);
-                        importMessageBox.addButton(tr("Import"), QMessageBox::AcceptRole);
-                        const auto skipButton = importMessageBox.addButton(tr("Skip"), QMessageBox::DestructiveRole);
-                        importMessageBox.exec();
-                        if (importMessageBox.clickedButton() == skipButton) {
-                            return false;
-                        }
-                        selectedAccountIds = childGroups;
-                    } else {
-                        QVector<LegacyAccountSelectionDialog::AccountItem> accountsToDisplay;
-                        oCSettings->beginGroup(QLatin1String(accountsC));
-                        for (const auto &accId : childGroups) {
-                            oCSettings->beginGroup(accId);
-                            const auto displayName = oCSettings->value(QLatin1String(displayNameC)).toString();
-                            const auto urlStr = oCSettings->value(QLatin1String(urlC)).toString();
-                            oCSettings->endGroup(); //accId
-                            const auto label = QString("%1 - %2").arg(displayName, urlStr);
-                            accountsToDisplay.push_back({accId, label});
-                        }
-                        oCSettings->endGroup(); //accountsC
-
-                        LegacyAccountSelectionDialog accountSelectionDialog(accountsToDisplay);
-                        if (accountSelectionDialog.exec() != QDialog::Accepted) {
-                            return false;
-                        }
-                        selectedAccountIds = accountSelectionDialog.selectedAccountIds();
-                        if (selectedAccountIds.isEmpty()) {
-                            return false;
-                        }
-                    }
-                } else {
-                    selectedAccountIds = childGroups;
+        qCInfo(lcAccountManager) << "Migrate: checking old config";
+        if (!forceLegacyImport() && displayLegacyImportDialog && accountsListSize > 0) {
+            wasLegacyImportDialogDisplayed = true;
+            if (accountsListSize == 1) {
+                const auto importQuestion =
+                    tr("An account was detected from a legacy desktop client.\n"
+                        "Should the account be imported?");
+                QMessageBox importMessageBox(QMessageBox::Question, tr("Legacy import"), importQuestion);
+                importMessageBox.addButton(tr("Import"), QMessageBox::AcceptRole);
+                const auto skipButton = importMessageBox.addButton(tr("Skip"), QMessageBox::DestructiveRole);
+                importMessageBox.exec();
+                if (importMessageBox.clickedButton() == skipButton) {
+                    return false;
                 }
-
-                const auto legacyVersion = oCSettings->value(ConfigFile::clientVersionC, {}).toString();
-                ConfigFile().setClientPreviousVersionString(legacyVersion);
-                qCInfo(lcAccountManager) << "Migrating from" << legacyVersion;
-                qCInfo(lcAccountManager) << "Copy settings" << oCSettings->allKeys().join(", ");
-                settings = std::move(oCSettings);
-                ConfigFile::setDiscoveredLegacyConfigPath(configFileInfo.canonicalPath());
-                break;
+                selectedAccountIds = childGroups;
             } else {
-                qCInfo(lcAccountManager) << "Migrate: could not read old config " << configFile;
+                QVector<LegacyAccountSelectionDialog::AccountItem> accountsToDisplay;
+                oCSettings->beginGroup(QLatin1String(accountsC));
+                for (const auto &accId : childGroups) {
+                    oCSettings->beginGroup(accId);
+                    const auto displayName = oCSettings->value(QLatin1String(displayNameC)).toString();
+                    const auto urlStr = oCSettings->value(QLatin1String(urlC)).toString();
+                    oCSettings->endGroup(); // accId
+                    const auto label = QString("%1 - %2").arg(displayName, urlStr);
+                    accountsToDisplay.push_back({accId, label});
+                }
+                oCSettings->endGroup(); // accountsC
+
+                LegacyAccountSelectionDialog accountSelectionDialog(accountsToDisplay);
+                if (accountSelectionDialog.exec() != QDialog::Accepted) {
+                    return false;
+                }
+                selectedAccountIds = accountSelectionDialog.selectedAccountIds();
+                if (selectedAccountIds.isEmpty()) {
+                    return false;
+                }
             }
+        } else {
+            selectedAccountIds = childGroups;
         }
+
+        const QFileInfo legacyConfigInfo(oCSettings->fileName());
+        const auto legacyVersion = oCSettings->value(ConfigFile::clientVersionC).toString();
+        Migration::setDiscoveredLegacyConfigPath(legacyConfigInfo.canonicalPath());
+        ConfigFile().setClientPreviousVersionString(legacyVersion);
+        qCInfo(lcAccountManager) << "Migrating from" << legacyVersion;
+        qCInfo(lcAccountManager) << "Copy settings" << oCSettings->allKeys().join(", ");
+
+        settings = std::move(oCSettings);
     }
 
     ConfigFile configFile;
@@ -344,7 +300,7 @@ bool AccountManager::restoreFromLegacySettings()
     configFile.setDownloadLimit(settings->value(ConfigFile::downloadLimitC, configFile.downloadLimit()).toInt());
 
     // Try to load the single account.
-    configFile.setMigrationPhase(ConfigFile::MigrationPhase::SetupUsers);
+    Migration::setPhase(Migration::Phase::SetupUsers);
     if (!settings->childKeys().isEmpty()) {
         settings->beginGroup(accountsC);
         const auto childGroups = selectedAccountIds.isEmpty() ? settings->childGroups() : selectedAccountIds;
@@ -426,6 +382,7 @@ void AccountManager::saveAccountHelper(const AccountPtr &account, QSettings &set
     } else {
         settings.setValue(QLatin1String(urlC), account->_url.toString());
     }
+    settings.setValue(QLatin1String(accountUuidC), account->_uuid);
     settings.setValue(QLatin1String(davUserC), account->_davUser);
     settings.setValue(QLatin1String(displayNameC), account->davDisplayName());
     settings.setValue(QLatin1String(serverVersionC), account->_serverVersion);
@@ -545,7 +502,7 @@ void AccountManager::migrateNetworkSettings(const AccountPtr &account, const QSe
     // Override user settings with global (QNetworkProxy::DefaultProxy) settings 
     // if user is set to use global settings
     ConfigFile configFile;
-    if (accountProxyType == QNetworkProxy::DefaultProxy && configFile.isMigrationInProgress()) {
+    if (accountProxyType == QNetworkProxy::DefaultProxy && Migration::isInProgress()) {
         accountProxyType = static_cast<QNetworkProxy::ProxyType>(configFile.proxyType());
         accountProxyHost = configFile.proxyHostName();
         accountProxyPort = configFile.proxyPort();
@@ -652,6 +609,7 @@ AccountPtr AccountManager::loadAccountHelper(QSettings &settings)
         settings.value(QLatin1String(serverDesktopEnterpriseUpdateChannelC), QVariant::fromValue(UpdateChannel::Invalid.toString())).toString());
     acc->_skipE2eeMetadataChecksumValidation = settings.value(QLatin1String(skipE2eeMetadataChecksumValidationC), {}).toBool();
     acc->_davUser = settings.value(QLatin1String(davUserC)).toString();
+    acc->_uuid = QUuid{settings.value(QLatin1String(accountUuidC)).toString()};
 #ifdef BUILD_FILE_PROVIDER_MODULE
     acc->setFileProviderDomainIdentifier(settings.value(QLatin1String(fileProviderDomainIdentifierC)).toString());
 #endif
@@ -694,7 +652,7 @@ AccountPtr AccountManager::loadAccountHelper(QSettings &settings)
 
     ConfigFile configFile;
     const auto proxyPasswordKey = QString(acc->userIdAtHostWithPort() + networkProxyPasswordKeychainKeySuffixC);
-    const auto appName = configFile.isUnbrandedToBrandedMigrationInProgress() ? ConfigFile::unbrandedAppName 
+    const auto appName = Migration::isUnbrandedToBrandedMigration() ? ConfigFile::unbrandedAppName
         : Theme::instance()->appName();
     const auto job = new QKeychain::ReadPasswordJob(appName, this);
     job->setKey(proxyPasswordKey);
@@ -731,8 +689,28 @@ AccountStatePtr AccountManager::account(const QString &name)
     return it != _accounts.cend() ? *it : AccountStatePtr();
 }
 
+// Decodes the host portion of a "user@host" or "user@host:port" userId string
+// from ACE to Unicode via QUrl::fromAce so that it can be compared against the
+// Unicode host returned by QUrl::host().
+static QString normalizeUserIdHost(const QString &id)
+{
+    const auto atIdx = id.lastIndexOf(QLatin1Char('@'));
+    if (atIdx < 0) {
+        return id;
+    }
+    const auto userPart = id.left(atIdx);
+    const auto hostWithPort = id.mid(atIdx + 1);
+    const auto colonIdx = hostWithPort.lastIndexOf(QLatin1Char(':'));
+    const auto hostPart = (colonIdx >= 0) ? hostWithPort.left(colonIdx) : hostWithPort;
+    const auto portPart = (colonIdx >= 0) ? hostWithPort.mid(colonIdx) : QString{};
+    const auto unicodeHost = QUrl::fromAce(hostPart.toLatin1());
+    return unicodeHost.isEmpty() ? id : (userPart + QLatin1Char('@') + unicodeHost + portPart);
+}
+
 AccountStatePtr AccountManager::accountFromUserId(const QString &id) const
 {
+    const auto normalizedId = normalizeUserIdHost(id);
+
     const auto accountsList = accounts();
     for (const auto &account : accountsList) {
         const auto isUserIdWithPort = id.split(QLatin1Char(':')).size() > 1;
@@ -740,7 +718,7 @@ AccountStatePtr AccountManager::accountFromUserId(const QString &id) const
         const auto portString = (port > 0 && port != 80 && port != 443) ? QStringLiteral(":%1").arg(port) : QStringLiteral("");
         const QString davUserId = QStringLiteral("%1@%2").arg(account->account()->davUser(), account->account()->url().host()) + portString;
 
-        if (davUserId == id) {
+        if (davUserId == normalizedId) {
             return account;
         }
     }
@@ -759,7 +737,7 @@ AccountState *AccountManager::addAccount(const AccountPtr &newAccount)
     addAccountState(newAccountState);
 
     if (_accounts.size() == 1) {
-        emit(accountListInitialized());
+        Q_EMIT accountListInitialized();
     }
 
     return newAccountState;
@@ -785,6 +763,8 @@ void AccountManager::removeAccountState(OCC::AccountState *account, AccountRemov
     _accounts.erase(it);
 
     if (removalMode == AccountRemovalMode::ForgetSensitiveData) {
+        account->account()->deleteAppToken();
+
         // Forget account credentials, cookies
         account->account()->credentials()->forgetSensitiveData();
         QFile::remove(account->account()->cookieJarPath());
@@ -796,16 +776,14 @@ void AccountManager::removeAccountState(OCC::AccountState *account, AccountRemov
     if (removalMode == AccountRemovalMode::ForgetSensitiveData) {
         // Forget E2E keys
         account->account()->e2e()->forgetSensitiveData();
-
-        account->account()->deleteAppToken();
     }
 
     // clean up config from subscriptions and enterprise channel
     updateServerHasValidSubscriptionConfig();
     updateServerDesktopEnterpriseUpdateChannel();
 
-    emit accountSyncConnectionRemoved(account);
-    emit accountRemoved(account);
+    Q_EMIT accountSyncConnectionRemoved(account);
+    Q_EMIT accountRemoved(account);
 }
 
 void AccountManager::updateServerHasValidSubscriptionConfig()
@@ -871,10 +849,15 @@ AccountPtr AccountManager::createAccount()
 {
     const auto acc = Account::create();
     acc->setSslErrorHandler(new SslDialogErrorHandler);
-    connect(acc.data(), &Account::proxyAuthenticationRequired,
-        ProxyAuthHandler::instance(), &ProxyAuthHandler::handleProxyAuthenticationRequired);
-    connect(acc.data(), &Account::lockFileError,
-        Systray::instance(), &Systray::showErrorMessageDialog);
+
+    if (qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+        connect(acc.data(), &Account::proxyAuthenticationRequired,
+            ProxyAuthHandler::instance(), &ProxyAuthHandler::handleProxyAuthenticationRequired);
+        if (Systray::instance()) {
+            connect(acc.data(), &Account::lockFileError,
+                Systray::instance(), &Systray::showErrorMessageDialog);
+        }
+    }
 
     return acc;
 }
@@ -884,8 +867,8 @@ void AccountManager::shutdown()
     const auto accountsCopy = _accounts;
     _accounts.clear();
     for (const auto &acc : accountsCopy) {
-        emit accountRemoved(acc.data());
-        emit removeAccountFolders(acc.data());
+        Q_EMIT accountRemoved(acc.data());
+        Q_EMIT removeAccountFolders(acc.data());
     }
 }
 
@@ -896,8 +879,9 @@ QList<AccountStatePtr> AccountManager::accounts() const
 
 bool AccountManager::isAccountIdAvailable(const QString &id) const
 {
-    if (_additionalBlockedAccountIds.contains(id))
+    if (_additionalBlockedAccountIds.contains(id)) {
         return false;
+    }
 
     return std::none_of(_accounts.cbegin(), _accounts.cend(), [id](const auto &acc) {
         return acc->account()->id() == id;
@@ -907,7 +891,7 @@ bool AccountManager::isAccountIdAvailable(const QString &id) const
 QString AccountManager::generateFreeAccountId() const
 {
     auto i = 0;
-    forever {
+    Q_FOREVER {
         const auto id = QString::number(i);
         if (isAccountIdAvailable(id)) {
             return id;
@@ -931,7 +915,7 @@ void AccountManager::addAccountState(AccountState *const accountState)
     updateServerHasValidSubscriptionConfig();
     updateServerDesktopEnterpriseUpdateChannel();
 
-    emit accountAdded(accountState);
+    Q_EMIT accountAdded(accountState);
 }
 
 bool AccountManager::forceLegacyImport() const

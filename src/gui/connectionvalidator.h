@@ -15,6 +15,8 @@
 #include "accountfwd.h"
 #include "clientsideencryption.h"
 
+#include <functional>
+
 namespace OCC {
 
 /**
@@ -80,15 +82,15 @@ public:
 
     [[nodiscard]] bool needToSign() const;
 
-public slots:
+public Q_SLOTS:
     void start();
 
-signals:
+Q_SIGNALS:
     void needToSignChanged();
 
     void done();
 
-private slots:
+private Q_SLOTS:
     void slotServerTermsOfServiceRecieved(const QJsonDocument &reply);
 
 private:
@@ -126,7 +128,7 @@ public:
     // How often should the Application ask this object to check for the connection?
     enum { DefaultCallingIntervalMsec = 62 * 1000 };
 
-public slots:
+public Q_SLOTS:
     /// Checks the server and the authentication.
     void checkServerAndAuth();
     void systemProxyLookupDone(const QNetworkProxy &proxy);
@@ -134,10 +136,10 @@ public slots:
     /// Checks authentication only.
     void checkAuthentication();
 
-signals:
+Q_SIGNALS:
     void connectionResult(OCC::ConnectionValidator::Status status, const QStringList &errors);
 
-protected slots:
+protected Q_SLOTS:
     void slotCheckRedirectCostFreeUrl();
 
     void slotCheckServerAndAuth();
@@ -157,6 +159,10 @@ protected slots:
     void termsOfServiceCheckDone();
 
 private:
+    using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
+
+    friend class ConnectionValidatorTestAccess;
+
 #ifndef TOKEN_AUTH_ONLY
     void reportConnected();
 #endif
@@ -177,6 +183,7 @@ private:
     AccountStatePtr _accountState;
     AccountPtr _account;
     TermsOfServiceChecker _termsOfServiceChecker;
+    LocalNetworkPermissionCheck _localNetworkPermissionCheck;
     bool _isCheckingServerAndAuth = false;
 };
 }

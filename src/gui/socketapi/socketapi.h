@@ -10,6 +10,7 @@
 #include "common/syncfilestatus.h"
 #include "common/syncjournalfilerecord.h"
 #include "syncfileitem.h"
+#include "accountfwd.h"
 
 #include "config.h"
 
@@ -26,6 +27,7 @@ class Folder;
 class SocketListener;
 class DirectEditor;
 class SocketApiJob;
+class SocketApiJobV2;
 
 namespace Mac {
     class FinderSyncService;
@@ -45,6 +47,8 @@ class SocketApi : public QObject
 {
     Q_OBJECT
 
+    Q_PROPERTY(QString socketPath READ socketPath NOTIFY socketPathChanged FINAL)
+
     enum SharingContextItemEncryptedFlag {
         EncryptedItem,
         NotEncryptedItem
@@ -62,18 +66,25 @@ public:
     explicit SocketApi(QObject *parent = nullptr);
     ~SocketApi() override;
 
-public slots:
+    [[nodiscard]] QString socketPath() const;
+
+public Q_SLOTS:
     void slotUpdateFolderView(OCC::Folder *f);
     void slotUnregisterPath(const QString &alias);
     void slotRegisterPath(const QString &alias);
     void broadcastStatusPushMessage(const QString &systemPath, OCC::SyncFileStatus fileStatus);
 
-signals:
-    void shareCommandReceived(const QString &localPath);
+Q_SIGNALS:
+    void shareCommandReceived(const QString &localPath, const QString &fileId);
     void fileActivityCommandReceived(const QString &localPath);
     void fileActionsCommandReceived(const QString &localPath);
+    void governanceLabelsCommandReceived(OCC::AccountPtr account, const QString &filePath, const QString &fileId);
+    void resolveConflictCommandReceived(const QString &conflictedPath, const QString &basePath, const QString &baseName, const QString &folderAlias);
+    void moveItemCommandReceived(const QString &localPath, const QString &defaultTarget);
 
-private slots:
+    void socketPathChanged();
+
+private Q_SLOTS:
     void slotNewConnection();
     void onLostConnection();
     void slotSocketDestroyed(QObject *obj);
@@ -140,6 +151,8 @@ private:
     Q_INVOKABLE void command_LOCK_FILE(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_UNLOCK_FILE(const QString &localFile, OCC::SocketListener *listener);
     Q_INVOKABLE void command_FILE_ACTIONS(const QString &localFile, OCC::SocketListener *listener);
+    Q_INVOKABLE void command_FILES_GOVERNANCE_LABELS(const QString &localFile, OCC::SocketListener *listener);
+    Q_INVOKABLE void command_V2_HYDRATE_FILE(const QSharedPointer<SocketApiJobV2> &job) const;
 
     void setFileLock(const QString &localFile, const SyncFileItem::LockStatus lockState) const;
 
@@ -167,6 +180,8 @@ private:
                                      const FileData &fileData,
                                      const SocketListener* const listener,
                                      const SyncJournalFileRecord &record) const;
+
+    void sendFilesGovernanceLabelsMenuOptions(const QFileInfo &fileInfo, const FileData &fileData, SocketListener *listener);
 
     /** Send the list of menu item. (added in version 1.1)
      * argument is a list of files for which the menu should be shown, separated by '\x1e'
@@ -196,6 +211,7 @@ private:
     QSet<QString> _registeredAliases;
     QMap<QIODevice *, QSharedPointer<SocketListener>> _listeners;
     QLocalServer _localServer;
+    QString m_socketPath;
 };
 }
 

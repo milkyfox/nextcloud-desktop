@@ -32,6 +32,33 @@ namespace OCC {
 
 Q_LOGGING_CATEGORY(lcFileSystem, "nextcloud.sync.filesystem", QtInfoMsg)
 
+std::filesystem::path FileSystem::toFilesystemPath(const QString &path)
+{
+#ifdef Q_OS_WIN
+    return QtPrivate::toFilesystemPath(FileSystem::longWinPath(path));
+#else
+    return QtPrivate::toFilesystemPath(path);
+#endif
+}
+
+QString FileSystem::fromFilesystemPath(const std::filesystem::path &path)
+{
+#ifdef Q_OS_WIN
+    constexpr std::wstring_view prefix = LR"(\\?\)";
+    std::wstring nativePath = path.native();
+    auto view = std::wstring_view(nativePath);
+    if (nativePath.starts_with(prefix)) {
+        view = view.substr(prefix.size());
+    }
+    return QDir::fromNativeSeparators(QString::fromWCharArray(view.data(), view.length()));
+#elif defined(Q_OS_MACOS)
+  // based on QFile::decodeName
+    return QtPrivate::fromFilesystemPath(path).normalized(QString::NormalizationForm_C);
+#else
+    return QtPrivate::fromFilesystemPath(path);
+#endif
+}
+
 QString FileSystem::longWinPath(const QString &inpath)
 {
 #ifdef Q_OS_WIN
@@ -206,25 +233,24 @@ bool FileSystem::rename(const QString &originFileName,
     bool success = false;
     QString error;
 #ifdef Q_OS_WIN
-    QString orig = longWinPath(originFileName);
-    QString dest = longWinPath(destinationFileName);
-
-    if (isLnkFile(originFileName) || isLnkFile(destinationFileName)) {
-        success = MoveFileEx((wchar_t *)orig.utf16(),
-            (wchar_t *)dest.utf16(),
-            MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH);
-        if (!success) {
-            error = Utility::formatWinError(GetLastError());
-        }
-    } else
-#endif
+    // Use the extended paths directly so Win32 does not normalize trailing periods or spaces.
+    const auto originPath = longWinPath(originFileName);
+    const auto destinationPath = longWinPath(destinationFileName);
+    success = MoveFileExW(reinterpret_cast<const wchar_t *>(originPath.utf16()),
+                          reinterpret_cast<const wchar_t *>(destinationPath.utf16()),
+                          MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH);
+    if (!success) {
+        error = Utility::formatWinError(GetLastError());
+    }
+#else
     {
-        QFile orig(originFileName);
-        success = orig.rename(destinationFileName);
+        QFile file(originFileName);
+        success = file.rename(destinationFileName);
         if (!success) {
-            error = orig.errorString();
+            error = file.errorString();
         }
     }
+#endif
 
     if (!success) {
         qCWarning(lcFileSystem) << "Error renaming file" << originFileName
@@ -314,6 +340,9 @@ bool FileSystem::openAndSeekFileSharedRead(QFile *file, QString *errorOrNull, qi
 
 QString FileSystem::joinPath(const QString& path, const QString& file)
 {
+    Q_ASSERT(!path.isEmpty());
+    Q_ASSERT(!file.isEmpty());
+
     if (path.isEmpty()) {
         qCWarning(lcFileSystem).nospace() << "joinPath called with an empty path; returning file=" << file;
         return QDir::toNativeSeparators(file);
@@ -698,18 +727,27 @@ Utility::Handle lockFile(const QString &fileName, FileSystem::LockMode mode)
     DWORD attr = GetFileAttributesW(reinterpret_cast<const wchar_t *>(fName.utf16()));
     if (attr != INVALID_FILE_ATTRIBUTES) {
         // Try to open the file with as much access as possible..
-        auto out = Utility::Handle{CreateFileW(reinterpret_cast<const wchar_t *>(fName.utf16()), accessMode, shareMode, nullptr, OPEN_EXISTING,
-                                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, nullptr)};
+        const auto createFileResult = CreateFileW(reinterpret_cast<const wchar_t *>(fName.utf16()), accessMode, shareMode, nullptr, OPEN_EXISTING,
+                                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+
+        if (createFileResult == INVALID_HANDLE_VALUE) {
+            return {};
+        }
+
+        auto out = Utility::Handle{createFileResult};
 
         if (out) {
+            if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+                // LockFile() is unsupported for directory handles and always fails there,
+                // and opening the directory already ruled out a sharing violation.
+                return out;
+            }
+
             LARGE_INTEGER start;
             start.QuadPart = 0;
             LARGE_INTEGER end;
             end.QuadPart = -1;
             if (LockFile(out.handle(), start.LowPart, start.HighPart, end.LowPart, end.HighPart)) {
-                // Lock acquired -> release it immediately
-                // just closing a file handle does not immediately release the lock leading to system instability
-                UnlockFile(out.handle(), start.LowPart, start.HighPart, end.LowPart, end.HighPart);
                 return out;
             } else {
                 return {};
@@ -727,12 +765,27 @@ bool FileSystem::isFileLocked(const QString &fileName, LockMode mode)
 {
 #ifdef Q_OS_WIN
     const auto handle = lockFile(fileName, mode);
-    if (!handle) {
+    if (handle) {
+        // Lock acquired -> release it immediately
+        // just closing a file handle does not immediately release the lock leading to system instability
+
+        LARGE_INTEGER start;
+        start.QuadPart = 0;
+        LARGE_INTEGER end;
+        end.QuadPart = -1;
+        if (!UnlockFile(handle, start.LowPart, start.HighPart, end.LowPart, end.HighPart)) {
+            const auto error = GetLastError();
+            qCWarning(lcFileSystem()) << "unlock file" << fileName << mode;
+            qCWarning(lcFileSystem()) << Q_FUNC_INFO << Utility::formatWinError(error) << fileName;
+        }
+    } else {
         const auto error = GetLastError();
+
         if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) {
             return true;
-        } else if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
-            qCWarning(lcFileSystem()) << Q_FUNC_INFO << Utility::formatWinError(error);
+        } else {
+            qCWarning(lcFileSystem()) << "lock file" << fileName << mode;
+            qCWarning(lcFileSystem()) << Q_FUNC_INFO << Utility::formatWinError(error) << fileName;
         }
     }
 #else
@@ -771,6 +824,45 @@ bool FileSystem::isJunction(const QString &filename)
     Q_UNUSED(filename);
     return false;
 #endif
+}
+
+
+FileSystem::ChildResults FileSystem::isChildPathOf2(QStringView child, QStringView parent)
+{
+    // if it is a relative path assume a local file, resolve it based on root
+    const auto sensitivity = Utility::fsCaseSensitivity();
+
+           // Fast-path the 3 common cases in this if-else statement:
+    if (parent.isEmpty()) {
+        // The empty parent is often used as the sync root, as (child) items do not start with a `/`
+        return ChildResult::IsChild | ChildResult::IsParentEmpty;
+    }
+    if (child.compare(parent, sensitivity) == 0) {
+        return ChildResult::IsChild | ChildResult::IsEqual;
+    }
+    const auto isSeparator = [](QChar c) { return c == QLatin1Char('/') || (Utility::isWindows() && c == QLatin1Char('\\')); };
+    if (isSeparator(parent.back())) {
+        // Here we can do a normal prefix check, because the parent is "terminated" with a slash,
+        // and we can't walk into the case in the else below.
+        if (child.startsWith(parent, sensitivity)) {
+            return ChildResult::IsChild;
+        }
+        // else: do the `cleanPath` version below
+    }
+
+           // Slow path (`QDir::cleanPath` does lots of string operations):
+    const QString cleanParent = QDir::cleanPath(parent.toString());
+    const QString cleanChild = QDir::cleanPath(child.toString());
+    // both paths are the same /root/foo == /root/foo
+    if (cleanChild.compare(cleanParent, sensitivity) == 0) {
+        return ChildResult::IsChild | ChildResult::IsEqual;
+    }
+    // cleanPath removes trailing slashes, add one to parent to be sure we handle a child path
+    // /root/foo/bar is not a child of /root/fo, therefore, the trailing slash is important
+    if (cleanChild.startsWith(cleanParent + QLatin1Char('/'), sensitivity)) {
+        return ChildResult::IsChild;
+    }
+    return ChildResult::IsNoChild;
 }
 
 #ifdef Q_OS_WIN

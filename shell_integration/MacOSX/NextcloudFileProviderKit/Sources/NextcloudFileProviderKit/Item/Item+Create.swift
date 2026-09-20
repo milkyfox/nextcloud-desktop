@@ -3,7 +3,6 @@
 
 @preconcurrency import FileProvider
 import Foundation
-import NextcloudCapabilitiesKit
 import NextcloudFileProviderXPC
 import NextcloudKit
 import UniformTypeIdentifiers
@@ -26,6 +25,12 @@ public extension Item {
     ) async -> (Item?, Error?) {
         let logger = FileProviderLogger(category: "Item", log: log)
 
+        // Note: when a parent folder is renamed on another client and an editor has a file open
+        // inside it, the editor may recreate the old folder here, producing a server-side duplicate.
+        // NSFilePresenter callbacks are only delivered when the writer uses NSFileCoordinator.
+        // It is not confirmed whether the File Provider daemon already does this internally when
+        // processing didUpdate renames. If it does not, wrapping rename propagation in an
+        // NSFileCoordinator coordinated write would notify registered presenters.
         let (_, _, _, createError) = await remoteInterface.createFolder(
             remotePath: remotePath, account: account, options: .init(), taskHandler: { task in
                 if let domain, let itemTemplate {
@@ -97,6 +102,10 @@ public extension Item {
 
         directory.downloaded = true
         directory.keepDownloaded = parentKeepDownloaded
+        // A folder we just created is already fully enumerated from the framework's point of
+        // view, so set `visitedDirectory` to keep future change scans covering it
+        // (nextcloud/desktop#9688, #10681).
+        directory.visitedDirectory = true
         dbManager.addItemMetadata(directory)
 
         let displayFileActions = await Item.typeHasApplicableContextMenuItems(account: account, remoteInterface: remoteInterface, candidate: directory.contentType)
@@ -131,15 +140,13 @@ public extension Item {
         log: any FileProviderLogging
     ) async -> (Item?, Error?) {
         let logger = FileProviderLogger(category: "Item", log: log)
-        let chunkUploadId =
-            itemTemplate.itemIdentifier.rawValue.replacingOccurrences(of: "/", with: "")
         let (ocId, etag, date, size, error) = await upload(
             fileLocatedAt: localPath,
             toRemotePath: remotePath,
             usingRemoteInterface: remoteInterface,
             withAccount: account,
             inChunksSized: forcedChunkSize,
-            usingChunkUploadId: chunkUploadId,
+            forItemWithIdentifier: itemTemplate.itemIdentifier.rawValue,
             dbManager: dbManager,
             creationDate: itemTemplate.creationDate as? Date,
             modificationDate: itemTemplate.contentModificationDate as? Date,
@@ -195,16 +202,6 @@ public extension Item {
             account: \(account.ncKitAccount)
             """
         )
-
-        if let expectedSize = itemTemplate.documentSize??.int64Value, size != expectedSize {
-            logger.info(
-                """
-                Created item upload reported as successful, but there are differences between
-                the received file size (\(Int(size ?? -1)))
-                and the original file size (\(itemTemplate.documentSize??.int64Value ?? 0))
-                """
-            )
-        }
 
         let contentType: String = if itemTemplate.contentType == .aliasFile {
             UTType.aliasFile.identifier

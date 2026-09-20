@@ -99,6 +99,8 @@ public extension Item {
         remotePath: String,
         newCreationDate: Date?,
         newContentModificationDate: Date?,
+        baseVersion: NSFileProviderItemVersion,
+        options: NSFileProviderModifyItemOptions,
         forcedChunkSize: Int?,
         domain: NSFileProviderDomain?,
         progress: Progress,
@@ -126,12 +128,54 @@ public extension Item {
         }
 
         var headers = [String: String]()
-
         if let token = metadata.lockToken {
             headers["If"] = "<\(remotePath)> (<opaquelocktoken:\(token)>)"
         }
 
-        let options = NKRequestOptions(customHeader: headers, queue: .global(qos: .utility))
+        // Optimistic-concurrency guard. Without a precondition the PUT is
+        // unconditional and silently overwrites a server copy that changed since
+        // we last synced (another client, or Adobe's rapid multi-step re-saves) —
+        // last-writer-wins. Send `If-Match: <baseEtag>` so the server rejects a
+        // conflicting write with 412 instead of clobbering. `baseVersion` carries
+        // the version the local edit was based on (its `contentVersion` is the
+        // etag bytes — see Item.swift); fall back to our stored etag.
+        let baseEtag: String? = {
+            if let s = String(data: baseVersion.contentVersion, encoding: .utf8), !s.isEmpty {
+                return s
+            }
+            return metadata.etag.isEmpty ? nil : metadata.etag
+        }()
+
+        // macOS 26+ has a real conflict-resolution contract: when the system asks
+        // for it via `.failOnConflict`, we fail the upload with
+        // `.localVersionConflictingWithServer` and the system creates a conflict
+        // copy so both versions survive. That option/error is macOS 26.0+ only,
+        // but the extension deploys back to macOS 13, so on older systems we apply
+        // a best-effort heuristic: always send `If-Match` and, on 412, fail
+        // transiently + re-enumerate to stop the silent overwrite.
+        var shouldSendIfMatch = false
+        var nativeFailOnConflict = false
+        if #available(macOS 26.0, *) {
+            if options.contains(.failOnConflict) {
+                shouldSendIfMatch = true
+                nativeFailOnConflict = true
+            }
+        } else {
+            shouldSendIfMatch = true
+        }
+
+        // A lock token is already an exclusive write precondition. Its acquisition also changes
+        // the server etag, while File Provider's base version intentionally remains the version the
+        // document was opened from. Do not combine that pre-lock etag with the current lock token.
+        // Without a lock token, keep using the etag as the optimistic-concurrency guard.
+        let sentIfMatch = shouldSendIfMatch && baseEtag != nil && metadata.lockToken == nil
+        if sentIfMatch, let baseEtag {
+            // Our stored etag is normalized (unquoted); Sabre/DAV compares If-Match
+            // against the quoted resource ETag, so re-add the quotes.
+            headers["If-Match"] = "\"\(baseEtag)\""
+        }
+
+        let uploadOptions = NKRequestOptions(customHeader: headers, queue: .global(qos: .utility))
 
         let (_, etag, date, size, error) = await upload(
             fileLocatedAt: newContents.path,
@@ -139,11 +183,11 @@ public extension Item {
             usingRemoteInterface: remoteInterface,
             withAccount: account,
             inChunksSized: forcedChunkSize,
-            usingChunkUploadId: metadata.chunkUploadId,
+            forItemWithIdentifier: ocId,
             dbManager: dbManager,
             creationDate: newCreationDate,
             modificationDate: newContentModificationDate,
-            options: options,
+            options: uploadOptions,
             log: logger.log,
             requestHandler: { progress.setHandlersFromAfRequest($0) },
             taskHandler: { task in
@@ -158,6 +202,12 @@ public extension Item {
             progressHandler: { $0.copyCurrentStateToProgress(progress) }
         )
 
+        // `metadata` is a value snapshot captured before `upload()`. A partial chunked-upload
+        // failure leaves the current resumable upload identifier in Realm, but the error paths
+        // below write this snapshot back. Refresh the identifier so that write does not replace the
+        // current identifier with its pre-upload value. Successful and non-resumable uploads clear it.
+        metadata.chunkUploadId = dbManager.itemMetadata(ocId: ocId)?.chunkUploadId
+
         guard error == .success else {
             logger.error(
                 """
@@ -167,6 +217,70 @@ public extension Item {
                 \(error.errorDescription)
                 """
             )
+
+            // We sent `If-Match`, so a 412 here means the server copy diverged
+            // from the version this edit was based on — a genuine content conflict,
+            // not merely a stale lock. Do NOT commit the rejected upload. Clear any
+            // lock token, drop the row into an error state, and re-enumerate so the
+            // server's newer version is fetched.
+            if sentIfMatch, error.isPreconditionFailedError {
+                logger.error("Upload rejected: server version changed since last sync (If-Match precondition failed).", [.item: itemIdentifier, .name: filename])
+                metadata.lockToken = nil
+                metadata.status = Status.uploadError.rawValue
+                metadata.sessionError = error.errorDescription
+                dbManager.addItemMetadata(metadata)
+                if let domain, let manager = NSFileProviderManager(for: domain) {
+                    Task {
+                        try? await manager.signalEnumerator(for: .workingSet)
+                    }
+                }
+
+                // macOS 26+: hand the system the dedicated conflict error so it
+                // creates a conflict copy and both versions survive.
+                if nativeFailOnConflict, #available(macOS 26.0, *) {
+                    return (nil, NSFileProviderError(.localVersionConflictingWithServer))
+                }
+
+                // Older systems have no conflict-copy contract. Return a transient
+                // error (NSCocoaErrorDomain, outside the resolvable NSFileProviderError
+                // set) so the system re-drives the modification after the
+                // re-enumeration above has refreshed our base etag — turning a silent
+                // overwrite into a visible sync round-trip.
+                return (nil, NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError, userInfo: [
+                    NSLocalizedDescriptionKey: "Upload rejected: the file changed on the server since it was last synced."
+                ]))
+            }
+
+            if error.isPreconditionFailedError || error.isLockedError {
+                logger.info("Clearing stale lock token after lock/precondition error.", [.item: itemIdentifier])
+                metadata.lockToken = nil
+                // Signal re-enumeration: if the parent was also renamed (causing the
+                // precondition failure), the working set check will update the path
+                // before the system retries.
+                if let domain, let manager = NSFileProviderManager(for: domain) {
+                    Task {
+                        try? await manager.signalEnumerator(for: .workingSet)
+                    }
+                }
+            }
+
+            // Remote path gone — parent renamed on another client while the file was
+            // open. Clear any stale lock token and signal the working set enumerator
+            // so the system discovers the new path before retrying. Return
+            // cannotSynchronize rather than noSuchItem: the file still exists on the
+            // server at a different location.
+            if error.isNotFoundError {
+                metadata.lockToken = nil
+                metadata.status = Status.uploadError.rawValue
+                metadata.sessionError = error.errorDescription
+                dbManager.addItemMetadata(metadata)
+                if let domain, let manager = NSFileProviderManager(for: domain) {
+                    Task {
+                        try? await manager.signalEnumerator(for: .workingSet)
+                    }
+                }
+                return (nil, NSFileProviderError(.cannotSynchronize))
+            }
 
             metadata.status = Status.uploadError.rawValue
             metadata.sessionError = error.errorDescription
@@ -198,17 +312,6 @@ public extension Item {
             """
         )
 
-        let contentAttributes = try? FileManager.default.attributesOfItem(atPath: newContents.path)
-        if let expectedSize = contentAttributes?[.size] as? Int64, size != expectedSize {
-            logger.info(
-                """
-                Item content modification upload reported as successful,
-                but there are differences between the received file size (\(size ?? -1))
-                and the original file size (\(documentSize?.int64Value ?? 0))
-                """
-            )
-        }
-
         var newMetadata =
             dbManager.setStatusForItemMetadata(updatedMetadata, status: .normal) ?? SendableItemMetadata(value: updatedMetadata)
 
@@ -219,6 +322,7 @@ public extension Item {
         // "changed by another application" right after they save it.
         newMetadata.date = newContentModificationDate ?? date ?? metadata.date
         newMetadata.etag = etag ?? metadata.etag
+        newMetadata.fileProviderContentVersion = newMetadata.etag
         newMetadata.ocId = ocId
         newMetadata.size = size ?? 0
         newMetadata.session = ""
@@ -226,6 +330,7 @@ public extension Item {
         newMetadata.sessionTaskIdentifier = 0
         newMetadata.downloaded = true
         newMetadata.uploaded = true
+        newMetadata.chunkUploadId = metadata.chunkUploadId
 
         dbManager.addItemMetadata(newMetadata)
 
@@ -280,6 +385,11 @@ public extension Item {
 
             guard let modifiedIgnored = await modifyUnuploaded(itemTarget: itemTarget, baseVersion: baseVersion, changedFields: changedFields, contents: newContents, options: options, request: request, ignoredFiles: ignoredFiles, domain: domain, forcedChunkSize: forcedChunkSize, progress: progress, dbManager: dbManager) else {
                 logger.error("Unable to mark bundle as excluded.", [.name: filename])
+                return (nil, NSFileProviderError(.cannotSynchronize))
+            }
+
+            guard dbManager.markItemAsExcludedFromSync(ocId: metadata.ocId) else {
+                logger.error("Unable to persist bundle exclusion state.", [.item: itemIdentifier, .name: filename])
                 return (nil, NSFileProviderError(.cannotSynchronize))
             }
 
@@ -497,6 +607,8 @@ public extension Item {
                 remotePath: newServerUrlFileName,
                 newCreationDate: newCreationDate,
                 newContentModificationDate: newContentModificationDate,
+                baseVersion: baseVersion,
+                options: options,
                 forcedChunkSize: forcedChunkSize,
                 domain: domain,
                 progress: progress,

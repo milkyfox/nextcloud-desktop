@@ -25,6 +25,7 @@ final class QuotaCapturingAppProxy: NSObject, AppProtocol {
     var capturedSummaryDomains: [String] = []
 
     func presentFileActions(_: String, path _: String, remoteItemPath _: String, withDomainIdentifier _: String) {}
+    func presentUnifiedSharing(forItem _: String, localPath _: String, remoteItemPath _: String, forDomainIdentifier _: String) {}
     func openItemInBrowser(_: String, remoteItemPath _: String, forDomainIdentifier _: String) {}
     func copyInternalLink(forItem _: String, remoteItemPath _: String, forDomainIdentifier _: String) {}
     func reportSyncStatus(_: String, forDomainIdentifier _: String) {}
@@ -650,13 +651,35 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
 
     func testCreateFileChunkedResumed() async throws {
         let chunkSize = 2
-        let expectedChunkUploadId = UUID().uuidString // Check if illegal characters are stripped
-        let illegalChunkUploadId = expectedChunkUploadId + "/" // Check if illegal characters are stripped
+        let expectedChunkUploadIdBase = UUID().uuidString
+        let illegalChunkUploadId = expectedChunkUploadIdBase + "/" // Check that path separators are encoded safely.
+
+        let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent("file")
+        let tempData = Data(repeating: 1, count: chunkSize * 3)
+        try tempData.write(to: tempUrl)
+
+        // New-item creation has no persisted ItemMetadata (the OS supplies the template), so the chunk
+        // id is derived from the template's itemIdentifier plus the content's (size, modificationDate),
+        // with illegal path characters stripped. Seed the prior interrupted attempt under exactly that
+        // derived id so the resume path recognises identical content.
+        let modificationDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let chunkUploadId = chunkUploadIdentifier(
+            forItemWithIdentifier: illegalChunkUploadId,
+            fileSize: Int64(tempData.count),
+            modificationDate: modificationDate
+        )
+        XCTAssertTrue(
+            chunkUploadId.hasPrefix(
+                chunkUploadIdentifierPrefix(forItemWithIdentifier: illegalChunkUploadId)
+            )
+        )
+        XCTAssertFalse(chunkUploadId.contains("/"))
+
         let previousUploadedChunkNum = 1
         let preexistingChunk = RemoteFileChunk(
             fileName: String(previousUploadedChunkNum),
             size: Int64(chunkSize),
-            remoteChunkStoreFolderName: expectedChunkUploadId
+            remoteChunkStoreFolderName: chunkUploadId
         )
 
         let db = Self.dbManager.ncDatabase()
@@ -665,37 +688,24 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
                 RemoteFileChunk(
                     fileName: String(previousUploadedChunkNum + 1),
                     size: Int64(chunkSize),
-                    remoteChunkStoreFolderName: expectedChunkUploadId
+                    remoteChunkStoreFolderName: chunkUploadId
                 ),
                 RemoteFileChunk(
                     fileName: String(previousUploadedChunkNum + 2),
                     size: Int64(chunkSize),
-                    remoteChunkStoreFolderName: expectedChunkUploadId
+                    remoteChunkStoreFolderName: chunkUploadId
                 )
             ])
         }
 
         let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
-        remoteInterface.currentChunks = [expectedChunkUploadId: [preexistingChunk]]
+        remoteInterface.currentChunks = [chunkUploadId: [preexistingChunk]]
 
-        // With real new item uploads we do not have an associated ItemMetadata as the template is
-        // passed onto us by the OS. We cannot rely on the chunkUploadId property we usually use
-        // during modified item uploads.
-        //
-        // We therefore can only use the system-provided item template's itemIdentifier as the
-        // chunked upload identifier during new item creation.
-        //
-        // To test this situation we set the ocId of the metadata used to construct the item
-        // template to the chunk upload id.
         var fileItemMetadata = SendableItemMetadata(
             ocId: illegalChunkUploadId, fileName: "file", account: Self.account
         )
-        fileItemMetadata.ocId = illegalChunkUploadId
         fileItemMetadata.classFile = NKTypeClassFile.document.rawValue
-
-        let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent("file")
-        let tempData = Data(repeating: 1, count: chunkSize * 3)
-        try tempData.write(to: tempUrl)
+        fileItemMetadata.date = modificationDate
 
         let fileItemTemplate = Item(
             metadata: fileItemMetadata,
@@ -729,7 +739,7 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
         XCTAssertEqual(remoteItem.directory, fileItemMetadata.directory)
         XCTAssertEqual(remoteItem.data, tempData)
         XCTAssertEqual(
-            remoteInterface.completedChunkTransferSize[expectedChunkUploadId],
+            remoteInterface.completedChunkTransferSize[chunkUploadId],
             Int64(tempData.count) - preexistingChunk.size
         )
 
@@ -783,6 +793,16 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
 
     func testCreateLockFileTriggersRemoteLockInsteadOfUpload() async {
         let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+        remoteInterface.lockUnlockResult = NKLock(
+            owner: Self.account.id,
+            ownerEditor: "",
+            ownerType: .token,
+            ownerDisplayName: Self.account.username,
+            time: nil,
+            timeOut: nil,
+            token: "files_lock/test-token",
+            etag: "etag-after-lock"
+        )
 
         // Setup remote folder and file
         let folderRemote = MockRemoteItem(
@@ -811,6 +831,7 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
             serverUrl: Self.account.serverUrl
         )
 
+        targetRemote.parent = folderRemote
         folderRemote.children = [targetRemote]
         folderRemote.parent = rootItem
         rootItem.children = [folderRemote]
@@ -826,6 +847,9 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
             ocId: targetRemote.identifier, fileName: targetFileName, account: Self.account
         )
         targetMetadata.serverUrl += "/folder"
+        targetMetadata.etag = "etag-before-lock"
+        targetMetadata.downloaded = true
+        targetMetadata.syncTime = Date(timeIntervalSince1970: 1)
         Self.dbManager.addItemMetadata(targetMetadata)
 
         // Construct the lock file metadata
@@ -859,6 +883,57 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
         XCTAssertNil(error)
         XCTAssertNotNil(Self.dbManager.itemMetadata(ocId: lockFileMetadata.ocId))
         XCTAssertTrue(targetRemote.locked)
+        let lockedMetadata = Self.dbManager.itemMetadata(ocId: targetRemote.identifier)
+        XCTAssertEqual(lockedMetadata?.etag, "etag-after-lock")
+        XCTAssertEqual(lockedMetadata?.lockToken, "files_lock/test-token")
+        XCTAssertEqual(
+            lockedMetadata?.fileProviderContentVersion,
+            "etag-before-lock",
+            "A lock-only etag transition must preserve File Provider's content version."
+        )
+        XCTAssertTrue(
+            Self.dbManager.pendingWorkingSetChanges(since: Date(timeIntervalSince1970: 2)).updated
+                .contains(where: { $0.ocId == targetRemote.identifier }),
+            "Recovering the lock token must queue the target item for a File Provider metadata refresh."
+        )
+
+        if let lockedMetadata {
+            let lockedItem = Item(
+                metadata: lockedMetadata,
+                parentItemIdentifier: .init(folderMetadata.ocId),
+                account: Self.account,
+                remoteInterface: remoteInterface,
+                dbManager: Self.dbManager
+            )
+            XCTAssertEqual(lockedItem.itemVersion.contentVersion, Data("etag-before-lock".utf8))
+        }
+
+        let targetRead = await Enumerator.readServerUrl(
+            targetRemote.remotePath,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            depth: .target,
+            log: FileProviderLogMock()
+        )
+        XCTAssertEqual(
+            targetRead.metadatas?.first?.fileProviderContentVersion,
+            "etag-before-lock",
+            "Refreshing the locked target must keep the content version from before the lock."
+        )
+
+        let laterRead = await Enumerator.readServerUrl(
+            folderRemote.remotePath,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            depth: .targetAndDirectChildren,
+            log: FileProviderLogMock()
+        )
+        XCTAssertFalse(
+            laterRead.changes?.createdAndUpdated.contains(where: { $0.ocId == targetRemote.identifier }) ?? true,
+            "A later enumeration must not report the owner's lock etag as a content update."
+        )
     }
 
     func testCreateLockFileUnactionableWithoutCapabilities() async throws {
@@ -941,6 +1016,229 @@ final class ItemCreateTests: NextcloudFileProviderKitTestCase {
         XCTAssertEqual(unwrappedError, NSFileProviderError(.excludedFromSync))
         XCTAssertNil(Self.dbManager.itemMetadata(ocId: lockFileMetadata.ocId))
         XCTAssertFalse(targetRemote.locked)
+    }
+
+    /// An Adobe lock file name does not encode the guarded document's extension, so the document
+    /// is resolved by matching a sibling file. Once resolved it is locked on the server just like
+    /// for Office lock files, while the lock file itself stays local and is never uploaded.
+    func testCreateAdobeInDesignLockFileLocksDocument() async {
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+
+        let folderRemote = MockRemoteItem(
+            identifier: "folder",
+            versionIdentifier: "1",
+            name: "folder",
+            remotePath: Self.account.davFilesUrl + "/folder",
+            directory: true,
+            account: Self.account.ncKitAccount,
+            username: Self.account.username,
+            userId: Self.account.id,
+            serverUrl: Self.account.serverUrl
+        )
+
+        let targetFileName = "MyDoc.indd"
+        let targetRemote = MockRemoteItem(
+            identifier: "folder/\(targetFileName)",
+            versionIdentifier: "1",
+            name: targetFileName,
+            remotePath: folderRemote.remotePath + "/" + targetFileName,
+            data: Data("test data".utf8),
+            locked: false,
+            account: Self.account.ncKitAccount,
+            username: Self.account.username,
+            userId: Self.account.id,
+            serverUrl: Self.account.serverUrl
+        )
+
+        folderRemote.children = [targetRemote]
+        folderRemote.parent = rootItem
+        rootItem.children = [folderRemote]
+
+        var folderMetadata = SendableItemMetadata(
+            ocId: folderRemote.identifier, fileName: "folder", account: Self.account
+        )
+        folderMetadata.directory = true
+        Self.dbManager.addItemMetadata(folderMetadata)
+
+        var targetMetadata = SendableItemMetadata(
+            ocId: targetRemote.identifier, fileName: targetFileName, account: Self.account
+        )
+        targetMetadata.serverUrl += "/folder"
+        Self.dbManager.addItemMetadata(targetMetadata)
+
+        // InDesign lock file: `~{base name}~{random token}(.idlk`.
+        let lockFileName = "~MyDoc~0kjyv(.idlk"
+        var lockFileMetadata = SendableItemMetadata(
+            ocId: "lock-id", fileName: lockFileName, account: Self.account
+        )
+        lockFileMetadata.serverUrl += "/folder"
+
+        let lockItemTemplate = Item(
+            metadata: lockFileMetadata,
+            parentItemIdentifier: .init(folderMetadata.ocId),
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager
+        )
+
+        let (createdItem, error) = await Item.create(
+            basedOn: lockItemTemplate,
+            contents: nil,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            progress: Progress(),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+
+        XCTAssertNotNil(createdItem)
+        XCTAssertEqual(createdItem?.isUploaded, false)
+        XCTAssertEqual(createdItem?.isDownloaded, true)
+        XCTAssertNil(error)
+
+        let lockMetadata = Self.dbManager.itemMetadata(ocId: lockFileMetadata.ocId)
+        XCTAssertNotNil(lockMetadata)
+        XCTAssertEqual(lockMetadata?.classFile, "lock")
+        XCTAssertEqual(lockMetadata?.isLockFileOfLocalOrigin, true)
+
+        // The lock file itself is never uploaded to the server.
+        XCTAssertFalse(folderRemote.children.contains { $0.name == lockFileName })
+        // The guarded document is locked on the server.
+        XCTAssertTrue(targetRemote.locked)
+    }
+
+    /// Premiere Pro lock files are named `{base name}.prlock` and guard a `.prproj` project.
+    func testCreateAdobePremiereLockFileLocksDocument() async {
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+
+        let folderRemote = MockRemoteItem(
+            identifier: "folder",
+            versionIdentifier: "1",
+            name: "folder",
+            remotePath: Self.account.davFilesUrl + "/folder",
+            directory: true,
+            account: Self.account.ncKitAccount,
+            username: Self.account.username,
+            userId: Self.account.id,
+            serverUrl: Self.account.serverUrl
+        )
+
+        let targetFileName = "MyDoc.prproj"
+        let targetRemote = MockRemoteItem(
+            identifier: "folder/\(targetFileName)",
+            versionIdentifier: "1",
+            name: targetFileName,
+            remotePath: folderRemote.remotePath + "/" + targetFileName,
+            data: Data("test data".utf8),
+            locked: false,
+            account: Self.account.ncKitAccount,
+            username: Self.account.username,
+            userId: Self.account.id,
+            serverUrl: Self.account.serverUrl
+        )
+
+        folderRemote.children = [targetRemote]
+        folderRemote.parent = rootItem
+        rootItem.children = [folderRemote]
+
+        var folderMetadata = SendableItemMetadata(
+            ocId: folderRemote.identifier, fileName: "folder", account: Self.account
+        )
+        folderMetadata.directory = true
+        Self.dbManager.addItemMetadata(folderMetadata)
+
+        var targetMetadata = SendableItemMetadata(
+            ocId: targetRemote.identifier, fileName: targetFileName, account: Self.account
+        )
+        targetMetadata.serverUrl += "/folder"
+        Self.dbManager.addItemMetadata(targetMetadata)
+
+        let lockFileName = "MyDoc.prlock"
+        var lockFileMetadata = SendableItemMetadata(
+            ocId: "lock-id", fileName: lockFileName, account: Self.account
+        )
+        lockFileMetadata.serverUrl += "/folder"
+
+        let lockItemTemplate = Item(
+            metadata: lockFileMetadata,
+            parentItemIdentifier: .init(folderMetadata.ocId),
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager
+        )
+
+        let (createdItem, error) = await Item.create(
+            basedOn: lockItemTemplate,
+            contents: nil,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            progress: Progress(),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+
+        XCTAssertNotNil(createdItem)
+        XCTAssertEqual(createdItem?.isUploaded, false)
+        XCTAssertNil(error)
+        XCTAssertEqual(Self.dbManager.itemMetadata(ocId: lockFileMetadata.ocId)?.isLockFileOfLocalOrigin, true)
+        XCTAssertFalse(folderRemote.children.contains { $0.name == lockFileName })
+        XCTAssertTrue(targetRemote.locked)
+    }
+
+    /// When the guarded document cannot be found (e.g. a stale lock file, or the document is not
+    /// in the database), the Adobe lock file is excluded from sync, matching Office behaviour.
+    func testCreateAdobeLockFileWithoutDocumentIsExcluded() async throws {
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+
+        let folderRemote = MockRemoteItem(
+            identifier: "folder",
+            versionIdentifier: "1",
+            name: "folder",
+            remotePath: Self.account.davFilesUrl + "/folder",
+            directory: true,
+            account: Self.account.ncKitAccount,
+            username: Self.account.username,
+            userId: Self.account.id,
+            serverUrl: Self.account.serverUrl
+        )
+        folderRemote.parent = rootItem
+        rootItem.children = [folderRemote]
+
+        var folderMetadata = SendableItemMetadata(
+            ocId: folderRemote.identifier, fileName: "folder", account: Self.account
+        )
+        folderMetadata.directory = true
+        Self.dbManager.addItemMetadata(folderMetadata)
+
+        // No `MyDoc.indd` sibling exists in the database.
+        let lockFileName = "~MyDoc~0kjyv(.idlk"
+        var lockFileMetadata = SendableItemMetadata(
+            ocId: "lock-id", fileName: lockFileName, account: Self.account
+        )
+        lockFileMetadata.serverUrl += "/folder"
+
+        let lockItemTemplate = Item(
+            metadata: lockFileMetadata,
+            parentItemIdentifier: .init(folderMetadata.ocId),
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager
+        )
+
+        let (createdItem, error) = await Item.create(
+            basedOn: lockItemTemplate,
+            contents: nil,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            progress: Progress(),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+
+        XCTAssertNil(createdItem)
+        let unwrappedError = try XCTUnwrap(error) as? NSFileProviderError
+        XCTAssertEqual(unwrappedError, NSFileProviderError(.excludedFromSync))
+        XCTAssertNil(Self.dbManager.itemMetadata(ocId: lockFileMetadata.ocId))
     }
 
     ///

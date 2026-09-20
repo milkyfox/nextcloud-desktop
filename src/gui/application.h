@@ -18,6 +18,10 @@
 #include <KDSingleApplication>
 #endif
 
+#if defined KF6DBusAddons_FOUND && KF6DBusAddons_FOUND
+#include <KDBusService>
+#endif
+
 #include <QApplication>
 #include <QPointer>
 #include <QQueue>
@@ -70,6 +74,7 @@ public:
     bool sendMessage(const QString &message);
 
     void showMainDialog();
+    bool handleUriSchemeRequest(const QUrl &url);
 
     [[nodiscard]] ownCloudGui *gui() const;
 
@@ -79,7 +84,7 @@ public:
 
     bool event(QEvent *event) override;
 
-public slots:
+public Q_SLOTS:
     // TODO: this should not be public
     void slotownCloudWizardDone(int);
     void slotCrash();
@@ -97,14 +102,15 @@ protected:
     void setupTranslations();
     void setupLogging();
 
-signals:
+Q_SIGNALS:
     void folderRemoved();
     void folderStateChanged(OCC::Folder *);
     void isShowingSettingsDialog();
     void systemPaletteChanged();
 
-protected slots:
+protected Q_SLOTS:
     void slotParseMessage(const QByteArray &msg);
+    void slotActivateRequestedMessage(const QStringList &arguments, const QString &workingDirectory);
     void slotCheckConnection();
     void slotCleanup();
     void slotAccountStateAdded(OCC::AccountState *accountState);
@@ -115,11 +121,14 @@ protected slots:
 private:
     void setHelp();
 
-    void handleEditLocallyFromOptions();
+    void handleUriFromOptions();
 
     AccountManager::AccountsRestoreResult restoreLegacyAccount();
     void setupConfigFile();
     void setupAccountsAndFolders();
+
+    void showMainDialogRemoteCommand();
+    void parseOptionsRemoteCommand(const QStringList &options);
 
     /**
      * Maybe a newer version of the client was used with this config file:
@@ -131,6 +140,8 @@ private:
 
 #ifdef Q_OS_MACOS
     OCC::SingleInstanceManager _singleApp;
+#elif defined KF6DBusAddons_FOUND && KF6DBusAddons_FOUND
+    KDBusService _dbusService;
 #else
     KDSingleApplication _singleApp;
 #endif
@@ -153,7 +164,8 @@ private:
     bool _userTriggeredConnect = false;
     bool _debugMode = false;
     bool _backgroundMode = false;
-    QUrl _editFileLocallyUrl;
+    bool _suppressNextEmptyAccountCheck = false;
+    QUrl _uriSchemeUrl;
 
     ClientProxy _proxy;
 
@@ -163,7 +175,7 @@ private:
     QString _overrideLocalDir;
     QString _setLanguage;
 
-    QScopedPointer<FolderMan> _folderManager;
+    QPointer<FolderMan> _folderManager;
 #if defined(Q_OS_WIN)
     QScopedPointer<ShellExtensionsServer> _shellExtensionsServer;
 #endif

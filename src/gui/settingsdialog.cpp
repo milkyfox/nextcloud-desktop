@@ -6,9 +6,11 @@
 
 #include "settingsdialog.h"
 
+#include "advancedsettings.h"
 #include "folderman.h"
 #include "theme.h"
 #include "generalsettings.h"
+#include "infosettings.h"
 #include "networksettings.h"
 #include "accountsettings.h"
 #include "configfile.h"
@@ -30,27 +32,31 @@
 #include <QWidgetAction>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPaintEvent>
+#include <QShowEvent>
+#include <QPalette>
 #include <QQuickView>
 #include <QActionGroup>
 #include <QScopedValueRollback>
 #include <QScrollArea>
 #include <QSizePolicy>
+#include <QStyle>
+#include <QStyleOptionToolButton>
 #include <QTimer>
 #include <QMouseEvent>
 #include <QWindow>
 #include <QtGlobal>
+#include <QScreen>
+#include <QGuiApplication>
+
+#ifdef Q_OS_MACOS
+#include "nativetitlebar_mac.h"
+#endif
 
 using namespace Qt::StringLiterals;
 
-#ifdef Q_OS_WIN
-    // "light" looks too bright on dark mode on Windows only
-    #define BACKGROUND_PALETTE "alternate-base"
-#else
-    // ...and "alternate-base" looks too bright on macOS only.  On Linux/Plasma either one looked fine ...
-    #define BACKGROUND_PALETTE "light"
-#endif
-
-namespace {
+namespace
+{
 class CurrentPageSizeStackedWidget : public QStackedWidget
 {
 public:
@@ -100,6 +106,7 @@ constexpr auto TOOLBAR_CSS = QLatin1String(
 const float buttonSizeRatio = 1.618f; // golden ratio
 constexpr auto settingsDialogDefaultWidth = 950;
 constexpr auto settingsDialogDefaultHeight = 500;
+const auto settingsNavigationIconTextSpacing = QLatin1String("  ");
 
 /** display name with two lines that is displayed in the settings
  * If width is bigger than 0, the string will be ellided so it does not exceed that width
@@ -123,38 +130,12 @@ QString shortDisplayNameForSettings(OCC::Account *account, int width)
 }
 }
 
-
 namespace OCC {
-
-class WindowDragHandle : public QWidget
-{
-public:
-    using QWidget::QWidget;
-
-protected:
-    void mousePressEvent(QMouseEvent *event) override
-    {
-        if (event->button() == Qt::LeftButton) {
-            if (const auto *window = this->window(); window && window->windowHandle()) {
-                window->windowHandle()->startSystemMove();
-                event->accept();
-                return;
-            }
-        }
-
-        QWidget::mousePressEvent(event);
-    }
-};
 
 SettingsDialog::SettingsDialog(ownCloudGui *gui, QWidget *parent)
     : QDialog(parent)
     , _gui(gui)
 {
-#if defined(Q_OS_MACOS) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    setWindowFlag(Qt::ExpandedClientAreaHint, true);
-    setWindowFlag(Qt::NoTitleBarBackgroundHint, true);
-#endif
-
     ConfigFile cfg;
 
     setupUi();
@@ -180,32 +161,30 @@ SettingsDialog::SettingsDialog(ownCloudGui *gui, QWidget *parent)
     _actionGroup->setExclusive(true);
     connect(_actionGroup, &QActionGroup::triggered, this, &SettingsDialog::slotSwitchPage);
 
-    QAction *generalAction = createColorAwareAction(QLatin1String(":/client/theme/settings.svg"), tr("General"));
-    _actionGroup->addAction(generalAction);
-    _toolBar->addAction(generalAction);
-    auto *accountSpacer = new QWidget(this);
-    accountSpacer->setFixedHeight(16);
-    _toolBar->addWidget(accountSpacer);
-    _toolBar->addSeparator();
-    auto *generalSettings = new GeneralSettings;
-    _stack->addWidget(generalSettings);
     _stack->setStyleSheet(QStringLiteral("QStackedWidget { background: transparent; }"));
-
-    // Connect styleChanged events to our widgets, so they can adapt (Dark-/Light-Mode switching)
-    connect(this, &SettingsDialog::styleChanged, generalSettings, &GeneralSettings::slotStyleChanged);
-
-#if defined(BUILD_UPDATER)
-    connect(AccountManager::instance(), &AccountManager::accountAdded, generalSettings, &GeneralSettings::loadUpdateChannelsList);
-    connect(AccountManager::instance(), &AccountManager::accountRemoved, generalSettings, &GeneralSettings::loadUpdateChannelsList);
-    connect(AccountManager::instance(), &AccountManager::capabilitiesChanged, generalSettings, &GeneralSettings::loadUpdateChannelsList);
-#endif
-
-    _actionGroupWidgets.insert(generalAction, generalSettings);
 
     const auto accountsList = AccountManager::instance()->accounts();
     for (const auto &account : accountsList) {
         accountAdded(account.data());
     }
+
+    _addAccountAction = createColorAwareAction(QLatin1String(":/client/theme/add.svg"), Systray::tr("Add account"));
+    _addAccountAction->setObjectName("settingsdialog_add_account"_L1);
+    _addAccountAction->setCheckable(false);
+    connect(_addAccountAction, &QAction::triggered, this, [] {
+        Q_EMIT Systray::instance()->openAccountWizard();
+    });
+    _toolBar->addAction(_addAccountAction);
+    _firstNonAccountAction = _addAccountAction;
+    updateAddAccountActionVisibility();
+
+    auto *accountSpacer = new QWidget(this);
+    accountSpacer->setFixedHeight(16);
+    _toolBar->addWidget(accountSpacer);
+
+    addSettingsPage(QLatin1String(":/client/theme/settings.svg"), tr("General"), new GeneralSettings(this));
+    addSettingsPage(QLatin1String(":/client/theme/advanced.svg"), tr("Advanced"), new AdvancedSettings(this));
+    addSettingsPage(QLatin1String(":/client/theme/info.svg"), tr("Info"), new InfoSettings(this), true);
 
     QTimer::singleShot(1, this, &SettingsDialog::showFirstPage);
 
@@ -223,31 +202,27 @@ SettingsDialog::SettingsDialog(ownCloudGui *gui, QWidget *parent)
 
     customizeStyle();
 
-    setWindowFlag(Qt::WindowContextHelpButtonHint, false);
-    setWindowFlag(Qt::Window, true);
+    // Close + minimize, but no zoom/full-screen button (full screen makes no sense for Settings).
+    setWindowFlags(Qt::Window
+        | Qt::CustomizeWindowHint
+        | Qt::WindowTitleHint
+        | Qt::WindowSystemMenuHint
+        | Qt::WindowMinimizeButtonHint
+        | Qt::WindowCloseButtonHint);
+
+    // Open centered on screen by default; restoreGeometry() overrides this when a position was saved.
+    adjustSize();
+    if (const auto *const targetScreen = QGuiApplication::primaryScreen()) {
+        move(targetScreen->availableGeometry().center() - rect().center());
+    }
     cfg.restoreGeometry(this);
 }
 
-SettingsDialog::~SettingsDialog()
-{
-}
+SettingsDialog::~SettingsDialog() = default;
 
 QWidget* SettingsDialog::currentPage()
 {
     return _stack->currentWidget();
-}
-
-// close event is not being called here
-void SettingsDialog::resizeEvent(QResizeEvent *event)
-{
-    QDialog::resizeEvent(event);
-
-#if defined(Q_OS_MACOS) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    if (_windowDragHandle) {
-        _windowDragHandle->setGeometry(0, 0, width(), _windowDragHandle->height());
-        _windowDragHandle->raise();
-    }
-#endif
 }
 
 void SettingsDialog::reject()
@@ -264,20 +239,51 @@ void SettingsDialog::accept()
     QDialog::accept();
 }
 
+void SettingsDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+
+#ifdef Q_OS_MACOS
+    // Style the title bar once the native window actually exists. Doing it earlier (e.g. from the
+    // constructor via winId()) doesn't stick, because Qt recreates the NSWindow when the dialog is
+    // shown, resetting the title-bar separator to its default.
+    if (auto *const handle = windowHandle()) {
+        styleNativeTitleBar(handle, /*hideTitleText=*/false, palette().color(QPalette::Window));
+    }
+#endif
+}
+
+bool SettingsDialog::event(QEvent *event)
+{
+    const auto handled = QDialog::event(event);
+    if (event->type() == QEvent::ApplicationPaletteChange) {
+        changeEvent(event);
+    }
+    return handled;
+}
+
 void SettingsDialog::changeEvent(QEvent *e)
 {
     switch (e->type()) {
+    case QEvent::ApplicationPaletteChange:
     case QEvent::StyleChange:
     case QEvent::PaletteChange:
     case QEvent::ThemeChange:
         customizeStyle();
 
         // Notify the other widgets (Dark-/Light-Mode switching)
-        emit styleChanged();
+        Q_EMIT styleChanged();
+#ifdef Q_OS_MACOS
+        // macOS resets title-bar styling across appearance changes; re-apply it.
+        if (auto *const handle = windowHandle()) {
+            styleNativeTitleBar(handle, /*hideTitleText=*/false, palette().color(QPalette::Window));
+        }
+#endif
         break;
     case QEvent::ActivationChange:
-        if(isActiveWindow())
-            emit onActivate();
+        if (isActiveWindow()) {
+            Q_EMIT onActivate();
+        }
         break;
     default:
         break;
@@ -302,9 +308,12 @@ void SettingsDialog::showFirstPage()
         _initialAccount = nullptr;
         return;
     }
-    QList<QAction *> actions = _toolBar->actions();
-    if (!actions.empty()) {
-        actions.first()->trigger();
+    const QList<QAction *> actions = _toolBar->actions();
+    for (auto *action : actions) {
+        if (_actionGroupWidgets.contains(action)) {
+            action->trigger();
+            return;
+        }
     }
 }
 
@@ -323,10 +332,43 @@ void SettingsDialog::showAccount(AccountState *account)
 
 void SettingsDialog::showIssuesList(AccountState *account)
 {
+    const auto userIndex = userIndexForAccount(account);
+    if (userIndex < 0) {
+        return;
+    }
+
+    UserModel::instance()->setCurrentUserId(userIndex);
+    Systray::instance()->showActivitiesWindow(userIndex);
+}
+
+void SettingsDialog::showUserStatus(AccountState *account)
+{
+    const auto userIndex = userIndexForAccount(account);
+    if (userIndex >= 0) {
+        Systray::instance()->showUserStatusWindow(userIndex);
+    }
+}
+
+void SettingsDialog::showAssistant(AccountState *account)
+{
+    const auto userIndex = userIndexForAccount(account);
+    if (userIndex >= 0) {
+        Systray::instance()->showAssistantWindow(userIndex);
+    }
+}
+
+void SettingsDialog::showSearch(AccountState *account)
+{
+    const auto userIndex = userIndexForAccount(account);
+    if (userIndex >= 0) {
+        Systray::instance()->showSearchWindow(userIndex);
+    }
+}
+
+int SettingsDialog::userIndexForAccount(AccountState *account) const
+{
     const auto userModel = UserModel::instance();
-    const auto id = userModel->findUserIdForAccount(account);
-    UserModel::instance()->setCurrentUserId(id);
-    Systray::instance()->showWindow();
+    return userModel ? userModel->findUserIdForAccount(account) : -1;
 }
 
 void SettingsDialog::accountAdded(AccountState *s)
@@ -343,7 +385,11 @@ void SettingsDialog::accountAdded(AccountState *s)
         accountAction->setIconText(shortDisplayNameForSettings(s->account().data(), static_cast<int>(height * buttonSizeRatio)));
     }
 
-    _toolBar->addAction(accountAction);
+    if (_firstNonAccountAction) {
+        _toolBar->insertAction(_firstNonAccountAction, accountAction);
+    } else {
+        _toolBar->addAction(accountAction);
+    }
     auto accountSettings = new AccountSettings(s, this);
     QString objectName = QLatin1String("accountSettings_");
     objectName += s->account()->displayName();
@@ -359,6 +405,9 @@ void SettingsDialog::accountAdded(AccountState *s)
     connect(accountSettings, &AccountSettings::openFolderAlias,
         _gui, &ownCloudGui::slotFolderOpenAction);
     connect(accountSettings, &AccountSettings::showIssuesList, this, &SettingsDialog::showIssuesList);
+    connect(accountSettings, &AccountSettings::showUserStatus, this, &SettingsDialog::showUserStatus);
+    connect(accountSettings, &AccountSettings::showAssistant, this, &SettingsDialog::showAssistant);
+    connect(accountSettings, &AccountSettings::showSearch, this, &SettingsDialog::showSearch);
     connect(s->account().data(), &Account::accountChangedAvatar, this, &SettingsDialog::slotAccountAvatarChanged);
     connect(s->account().data(), &Account::accountChangedDisplayName, this, &SettingsDialog::slotAccountDisplayNameChanged);
 
@@ -373,6 +422,8 @@ void SettingsDialog::accountAdded(AccountState *s)
     });
     userInfo->setActive(true);
     userInfo->slotFetchInfo();
+
+    updateAddAccountActionVisibility();
 }
 
 void SettingsDialog::slotAccountAvatarChanged()
@@ -440,12 +491,51 @@ void SettingsDialog::accountRemoved(AccountState *s)
         _actionForAccount.remove(s->account().data());
     }
 
+    updateAddAccountActionVisibility();
+
     // Hide when the last account is deleted. We want to enter the same
     // state we'd be in the client was started up without an account
     // configured.
     if (AccountManager::instance()->accounts().isEmpty()) {
         hide();
     }
+}
+
+void SettingsDialog::updateAddAccountActionVisibility()
+{
+    if (_addAccountAction) {
+        _addAccountAction->setVisible(Systray::instance()->enableAddAccount());
+    }
+}
+
+void SettingsDialog::addSettingsPage(const QString &iconPath, const QString &title, QWidget *settingsPage, [[maybe_unused]] bool updateChannelAware)
+{
+    auto *settingsAction = createColorAwareAction(iconPath, title);
+    _actionGroup->addAction(settingsAction);
+    _toolBar->addAction(settingsAction);
+
+    QString objectName = QLatin1String("settingsPage_");
+    objectName += title;
+    settingsPage->setObjectName(objectName);
+    _stack->addWidget(settingsPage);
+
+    if (auto *generalSettingsPage = qobject_cast<GeneralSettings *>(settingsPage)) {
+        connect(this, &SettingsDialog::styleChanged, generalSettingsPage, &GeneralSettings::slotStyleChanged);
+    } else if (auto *advancedSettingsPage = qobject_cast<AdvancedSettings *>(settingsPage)) {
+        connect(this, &SettingsDialog::styleChanged, advancedSettingsPage, &AdvancedSettings::slotStyleChanged);
+    } else if (auto *infoSettingsPage = qobject_cast<InfoSettings *>(settingsPage)) {
+        connect(this, &SettingsDialog::styleChanged, infoSettingsPage, &InfoSettings::slotStyleChanged);
+
+#if defined(BUILD_UPDATER)
+        if (updateChannelAware) {
+            connect(AccountManager::instance(), &AccountManager::accountAdded, infoSettingsPage, &InfoSettings::loadUpdateChannelsList);
+            connect(AccountManager::instance(), &AccountManager::accountRemoved, infoSettingsPage, &InfoSettings::loadUpdateChannelsList);
+            connect(AccountManager::instance(), &AccountManager::capabilitiesChanged, infoSettingsPage, &InfoSettings::loadUpdateChannelsList);
+        }
+#endif
+    }
+
+    _actionGroupWidgets.insert(settingsAction, settingsPage);
 }
 
 void SettingsDialog::customizeStyle()
@@ -457,36 +547,83 @@ void SettingsDialog::customizeStyle()
     const QScopedValueRollback<bool> updatingStyle(_updatingStyle, true);
     _toolBar->setStyleSheet(TOOLBAR_CSS);
 
-    setStyleSheet(QStringLiteral(
-        "#Settings { background: palette(window); border-radius: 0; }"
+#ifdef Q_OS_WIN
+    const auto windowColor = QStringLiteral("palette(window)");
+    const auto panelColor = QStringLiteral("palette(alternate-base)");
+#else
+    const auto applicationPalette = QGuiApplication::palette();
+    const auto windowColor = applicationPalette.color(QPalette::Window).name();
+    const auto panelColor = Theme::settingsPanelColor(applicationPalette).name();
+#endif
 
-        /* Navigation */
-        "#settings_navigation_scroll { background: palette(" BACKGROUND_PALETTE "); border-radius: 12px; padding: 4px; }"
-        "#settings_navigation { background: transparent; border: none; padding: 0px; }"
+    auto separatorColor = palette().color(QPalette::Mid);
+    separatorColor.setAlpha(48);
+    const auto separatorCss = QStringLiteral("rgba(%1, %2, %3, %4)")
+        .arg(separatorColor.red())
+        .arg(separatorColor.green())
+        .arg(separatorColor.blue())
+        .arg(separatorColor.alpha());
 
-        /* Content area */
-        "#settings_content, #settings_content_scroll { background: palette(window); border-radius: 12px; }"
+    setStyleSheet(QStringLiteral("#Settings { background: %3; border-radius: 0; }"
 
-        /* Panels */
-        "#generalGroupBox, #advancedGroupBox, #aboutAndUpdatesGroupBox,"
-        "#accountStatusPanel, #connectionSettingsPanel, #fileProviderPanel, #syncFoldersPanel {"
-        " background: palette(" BACKGROUND_PALETTE ");"
-        " border-radius: 10px;"
-        " margin: 0px;"
-        " padding: 6px;"
-        " }"
-        "#generalGroupBoxTitle, #advancedGroupBoxTitle, #aboutAndUpdatesGroupBoxTitle {"
-        " margin-bottom: 6px;"
-        " }"
-    ));
+                                 /* Navigation */
+                                 "#settings_navigation_scroll { background: %2; border-radius: 12px; padding: 4px; }"
+                                 "#settings_navigation { background: transparent; border: none; padding: 0px; }"
 
-    const auto &allActions = _actionGroup->actions();
-    for (const auto a : allActions) {
+                                 /* Content area */
+                                 "#settings_content, #settings_content_scroll { background: %3; border-radius: 12px; }"
+
+                                 /* Panels */
+                                 "#generalGroupBox, #fileProviderGroupBox, #notificationsGroupBox, #advancedGroupBox, #syncBehaviorGroupBox,"
+                                 "#advancedActionsGroupBox, #aboutAndUpdatesGroupBox, #updatesGroupBox {"
+                                 " background: %2;"
+                                 " border: none;"
+                                 " border-radius: 12px;"
+                                 " margin: 0px;"
+                                 " padding: 0px;"
+                                 " }"
+                                 "#accountShortcutsPanel, #accountStatusPanel, #encryptionPanel, #syncFoldersPanel,"
+                                 "#fileProviderMaintenancePanel, #accountActionsPanel {"
+                                 " background: %2;"
+                                 " border: none;"
+                                 " border-radius: 12px;"
+                                 " margin: 0px;"
+                                 " padding: 6px;"
+                                 " }"
+                                 "#generalGroupBox QLabel, #fileProviderGroupBox QLabel, #notificationsGroupBox QLabel, #advancedGroupBox QLabel,"
+                                 "#syncBehaviorGroupBox QLabel, #advancedActionsGroupBox QLabel,"
+                                 "#aboutAndUpdatesGroupBox QLabel, #updatesGroupBox QLabel {"
+                                 " margin: 0px;"
+                                 " padding: 0px;"
+                                 " }"
+                                 "#advancedGroupBox QSpinBox, #updatesGroupBox QComboBox {"
+                                 " min-height: 18px;"
+                                 " max-height: 20px;"
+                                 " }"
+                                 "#startupSeparator, #serverNotificationsSeparator, #chatNotificationsSeparator,"
+                                 "#callNotificationsSeparator, #existingFolderLimitSeparator,"
+                                 "#stopExistingFolderNowBigSyncSeparator, #remotePollIntervalSeparator,"
+                                 "#moveFilesToTrashSeparator, #showInExplorerNavigationPaneSeparator,"
+                                 "#updateControlsSeparator {"
+                                 " color: %1;"
+                                 " background: %1;"
+                                 " border: none;"
+                                 " min-height: 1px;"
+                                 " max-height: 1px;"
+                                 " }")
+                      .arg(separatorCss, panelColor, windowColor));
+
+    auto colorAwareActions = _actionGroup->actions();
+    if (_addAccountAction) {
+        colorAwareActions.append(_addAccountAction);
+    }
+    for (const auto a : colorAwareActions) {
         QIcon icon = Theme::createColorAwareIcon(a->property("iconPath").toString(), palette());
         a->setIcon(icon);
         auto *btn = qobject_cast<QToolButton *>(_toolBar->widgetForAction(a));
-        if (btn)
+        if (btn) {
             btn->setIcon(icon);
+        }
     }
 }
 
@@ -509,7 +646,35 @@ public:
             return nullptr;
         }
 
-        auto *btn = new QToolButton(parent);
+        class SettingsNavigationButton : public QToolButton
+        {
+        public:
+            using QToolButton::QToolButton;
+
+        protected:
+            void paintEvent(QPaintEvent *event) override
+            {
+                Q_UNUSED(event)
+
+                QStyleOptionToolButton option;
+                initStyleOption(&option);
+
+                QPainter painter(this);
+                style()->drawComplexControl(QStyle::CC_ToolButton, &option, &painter, this);
+            }
+
+        private:
+            void initStyleOption(QStyleOptionToolButton *option) const override
+            {
+                QToolButton::initStyleOption(option);
+                if (!option->text.isEmpty()) {
+                    option->text.prepend(settingsNavigationIconTextSpacing);
+                    option->text.replace(QLatin1Char('\n'), QLatin1Char('\n') + settingsNavigationIconTextSpacing);
+                }
+            }
+        };
+
+        auto *btn = new SettingsNavigationButton(parent);
         QString objectName = QLatin1String("settingsdialog_toolbutton_");
         objectName += text();
         btn->setObjectName(objectName);
@@ -594,14 +759,6 @@ void SettingsDialog::setupUi()
     mainLayout->addWidget(contentScroll);
     mainLayout->setStretch(0, 0);
     mainLayout->setStretch(1, 1);
-
-#if defined(Q_OS_MACOS) && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
-    _windowDragHandle = new WindowDragHandle(this);
-    _windowDragHandle->setObjectName(QLatin1String("settings_window_drag_handle"));
-    _windowDragHandle->setFixedHeight(28);
-    _windowDragHandle->setGeometry(0, 0, width(), _windowDragHandle->height());
-    _windowDragHandle->raise();
-#endif
 }
 
 } // namespace OCC

@@ -47,12 +47,15 @@ static const QUrl sUploadUrl("owncloud://somehost/owncloud/remote.php/dav/upload
 inline QString getFilePathFromUrl(const QUrl &url)
 {
     QString path = url.path();
-    if (path.startsWith(sRootUrl2.path()))
+    if (path.startsWith(sRootUrl2.path())) {
         return path.mid(sRootUrl2.path().length());
-    if (path.startsWith(sUploadUrl.path()))
+    }
+    if (path.startsWith(sUploadUrl.path())) {
         return path.mid(sUploadUrl.path().length());
-    if (path.startsWith(sRootUrl.path()))
+    }
+    if (path.startsWith(sRootUrl.path())) {
         return path.mid(sRootUrl.path().length());
+    }
     return {};
 }
 
@@ -143,7 +146,8 @@ public:
             , bytesAvailable{bytesAvailable}
         {}
 
-        QString bytesAvailableString() const {
+        [[nodiscard]] QString bytesAvailableString() const
+        {
             if (_bytesAvailableString.isEmpty()) {
                 return QString::number(bytesAvailable);
             }
@@ -223,6 +227,7 @@ public:
     char contentChar = 'W';
     LockState lockState = LockState::FileUnlocked;
     int lockType = 0;
+    QString lockToken;
     QString lockOwner;
     QString lockOwnerId;
     QString lockEditorId;
@@ -266,7 +271,7 @@ public:
 
     Q_INVOKABLE virtual void respond();
 
-public slots:
+public Q_SLOTS:
     void slotSetFinished();
 
 public:
@@ -465,7 +470,7 @@ public:
     using QNetworkReply::setError;
     using QNetworkReply::setAttribute;
 
-public slots:
+public Q_SLOTS:
     void slotSetFinished();
 
 public:
@@ -596,6 +601,7 @@ class FakeFolder
 {
     QTemporaryDir _tempDir;
     QString _tempDirLocalPath;
+    QString _remotePath;
     DiskFileModifier _localModifier;
     // FIXME: Clarify ownership, double delete
     FakeQNAM *_fakeQnam;
@@ -673,8 +679,9 @@ inline const FileInfo *findConflict(FileInfo &dir, const QString &filename)
 {
     QFileInfo info(filename);
     const FileInfo *parentDir = dir.find(info.path());
-    if (!parentDir)
+    if (!parentDir) {
         return nullptr;
+    }
     QString start = info.baseName() + " (conflicted copy";
     for (const auto &item : parentDir->children) {
         if (item.name.startsWith(start)) {
@@ -705,7 +712,7 @@ inline void addFiles(QStringList &dest, const FileInfo &fi)
 {
     if (fi.isDir) {
         dest += QStringLiteral("%1 - dir").arg(fi.path());
-        foreach (const FileInfo &fi, fi.children)
+        Q_FOREACH (const FileInfo &fi, fi.children)
             addFiles(dest, fi);
     } else {
         dest += QStringLiteral("%1 - %2 %3-bytes").arg(fi.path()).arg(fi.size).arg(fi.contentChar);
@@ -715,7 +722,7 @@ inline void addFiles(QStringList &dest, const FileInfo &fi)
 inline QString toStringNoElide(const FileInfo &fi)
 {
     QStringList files;
-    foreach (const FileInfo &fi, fi.children)
+    Q_FOREACH (const FileInfo &fi, fi.children)
         addFiles(files, fi);
     files.sort();
     return QStringLiteral("FileInfo with %1 files(\n\t%2\n)").arg(files.size()).arg(files.join("\n\t"));
@@ -735,7 +742,7 @@ inline void addFilesDbData(QStringList &dest, const FileInfo &fi)
             fi.isDir ? "dir" : "file",
             QString::number(fi.lastModified.toSecsSinceEpoch()),
             fi.fileId);
-        foreach (const FileInfo &fi, fi.children)
+        Q_FOREACH (const FileInfo &fi, fi.children)
             addFilesDbData(dest, fi);
     } else {
         dest += QStringLiteral("%1 - %2 %3 %4 %5").arg(
@@ -750,7 +757,7 @@ inline void addFilesDbData(QStringList &dest, const FileInfo &fi)
 inline char *printDbData(const FileInfo &fi)
 {
     QStringList files;
-    foreach (const FileInfo &fi, fi.children)
+    Q_FOREACH (const FileInfo &fi, fi.children)
         addFilesDbData(files, fi);
     return QTest::toString(QStringLiteral("FileInfo with %1 files(%2)").arg(files.size()).arg(files.join(", ")));
 }

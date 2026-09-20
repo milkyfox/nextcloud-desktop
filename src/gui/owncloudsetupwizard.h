@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QWidget>
 #include <QPointer>
+#include <QUrl>
 
 class QQuickWindow;
 
@@ -27,9 +28,10 @@ class OwncloudSetupWizard : public QObject
 public:
     /** Run the wizard */
     static void runWizard(QObject *obj, const char *amember, QWidget *parent = nullptr, bool forceRestart = false);
+    static void runWizardForLoginFlow(QObject *obj, const char *amember, const QUrl &serverUrl, QWidget *parent = nullptr);
     static bool bringWizardToFrontIfVisible();
 
-signals:
+Q_SIGNALS:
     // overall dialog close signal.
     void ownCloudWizardDone(int);
 
@@ -37,6 +39,7 @@ private:
     explicit OwncloudSetupWizard(QObject *parent = nullptr);
     ~OwncloudSetupWizard() override;
     bool startQmlWizard();
+    bool startQmlWizardForLoginFlow(const QUrl &serverUrl);
     void finish(int result);
 
     AccountWizardController *_qmlController = nullptr;

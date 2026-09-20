@@ -33,7 +33,7 @@ public:
     };
     Q_ENUM(LogType)
 
-    bool isLoggingToFile() const;
+    [[nodiscard]] bool isLoggingToFile() const;
 
     void doLog(QtMsgType type, const QMessageLogContext &ctx, const QString &message);
 
@@ -42,23 +42,26 @@ public:
     void postGuiLog(const QString &title, const QString &message);
     void postGuiMessage(const QString &title, const QString &message);
 
-    QString logFile() const;
+    [[nodiscard]] QString logFile() const;
     void setLogFile(const QString &name);
 
     void setPermanentDeleteLogFile(const QString &name);
 
     void setLogExpire(int expire);
 
-    QString logDir() const;
+    [[nodiscard]] QString logDir() const;
     void setLogDir(const QString &dir);
 
     void setLogFlush(bool flush);
 
-    bool logDebug() const { return _logDebug; }
+    [[nodiscard]] bool logDebug() const
+    {
+        return _logDebug;
+    }
     void setLogDebug(bool debug);
 
     /** Returns where the automatic logdir would be */
-    QString temporaryFolderLogDirPath() const;
+    [[nodiscard]] QString temporaryFolderLogDirPath() const;
 
     /** Sets up default dir log setup.
      *
@@ -81,13 +84,13 @@ public:
     }
     void setLogRules(const QSet<QString> &rules);
 
-signals:
+Q_SIGNALS:
     void logWindowLog(const QString &);
 
     void guiLog(const QString &, const QString &);
     void guiMessage(const QString &, const QString &);
 
-public slots:
+public Q_SLOTS:
     void enterNextLogFile(const QString &baseFileName, OCC::Logger::LogType type);
 
 private:

@@ -56,6 +56,12 @@ namespace FileSystem {
     QString OWNCLOUDSYNC_EXPORT filePathLockFilePatternMatch(const QString &path);
     // check if it is an office file (by extension), ONLY call it for files
     bool OWNCLOUDSYNC_EXPORT isMatchingOfficeFileExtension(const QString &path);
+    // check if it is an AutoCAD document (by .dwg extension), ONLY call it for files
+    bool OWNCLOUDSYNC_EXPORT isMatchingAutoCADDocumentExtension(const QString &path);
+    // check if it is an Adobe document guarded by an Adobe lock file (by extension), ONLY call it for files
+    bool OWNCLOUDSYNC_EXPORT isMatchingAdobeDocumentExtension(const QString &path);
+    // check if it is an Affinity document (by extension), ONLY call it for files
+    bool OWNCLOUDSYNC_EXPORT isMatchingAffinityDocumentExtension(const QString &path);
     // finds and fetches FileLockingInfo for the corresponding file that we are locking/unlocking
     FileLockingInfo OWNCLOUDSYNC_EXPORT lockFileTargetFilePath(const QString &lockFilePath, const QString &lockFileNamePattern);
     // lists all files matching a lockfile pattern in dirPath
@@ -75,6 +81,11 @@ namespace FileSystem {
     time_t OWNCLOUDSYNC_EXPORT getModTime(const QString &filename);
 
     bool OWNCLOUDSYNC_EXPORT setModTime(const QString &filename, time_t modTime);
+
+    OWNCLOUDSYNC_EXPORT time_t fileTimeToTime_t(std::filesystem::file_time_type fileTime);
+    OWNCLOUDSYNC_EXPORT std::filesystem::file_time_type time_tToFileTime(time_t fileTime);
+
+    bool OWNCLOUDSYNC_EXPORT setModTime(const std::filesystem::path &filename, time_t modTime);
 
     /**
      * @brief Get the size for a file

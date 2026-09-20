@@ -49,7 +49,9 @@ public:
     { return pinStateInDb(folderPath); }
     AvailabilityResult availability(const QString &folderPath, const AvailabilityRecursivity recursiveCheck) override;
 
-public slots:
+    [[nodiscard]] HydrationJob *hydrateFile(const QByteArray &fileId, const QString &targetPath) override;
+
+public Q_SLOTS:
     void fileStatusChanged(const QString &, OCC::SyncFileStatus) override {}
 
 protected:
@@ -61,6 +63,9 @@ class SuffixVfsPluginFactory : public QObject, public DefaultPluginFactory<VfsSu
     Q_OBJECT
     Q_PLUGIN_METADATA(IID "org.owncloud.PluginFactory" FILE "vfspluginmetadata.json")
     Q_INTERFACES(OCC::PluginFactory)
+
+public:
+    [[nodiscard]] Result<void, QString> prepare(const QString &path, const QUuid &accountUuid) const override;
 };
 
 } // namespace OCC

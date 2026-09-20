@@ -23,6 +23,7 @@ class ExcludedFiles;
 namespace OCC {
 
 class AbstractCredentials;
+class Migration;
 
 /**
  * @brief The ConfigFile class
@@ -42,6 +43,8 @@ public:
     static QString excludeFileFromSystem(); // doesn't access config dir
 
     void cleanUpdaterConfiguration();
+    /** Path of the log msiexec writes while installing an update (Windows). */
+    [[nodiscard]] QString msiLogFilePath() const;
     void cleanupGlobalNetworkConfiguration();
 
     /**
@@ -148,10 +151,6 @@ public:
     /** If we should move the files deleted on the server in the trash  */
     [[nodiscard]] bool moveToTrash() const;
     void setMoveToTrash(bool);
-
-    /** If we should force loginflow v2 */
-    [[nodiscard]] bool forceLoginV2() const;
-    void setForceLoginV2(bool);
 
     /** Whether block-level delta sync is enabled for large files.
      *  Requires the crispcloud_delta server app to be installed.
@@ -261,10 +260,6 @@ public:
     /// Add the system and user exclude file path to the ExcludedFiles instance.
     static void setupDefaultExcludeFilePaths(ExcludedFiles &excludedFiles);
 
-    /// Set during first time migration of legacy accounts in AccountManager
-    [[nodiscard]] static QString discoveredLegacyConfigPath();
-    static void setDiscoveredLegacyConfigPath(const QString &discoveredLegacyConfigPath);
-
     /// File Provider Domain UUID to Account ID mapping
 
     /**
@@ -276,24 +271,16 @@ public:
     [[nodiscard]] bool fileProviderDomainsAppSandboxMigrationCompleted() const;
     void setFileProviderDomainsAppSandboxMigrationCompleted(bool completed);
 
-    /// Helper function for migration/upgrade proccess
-    enum MigrationPhase {
-        NotStarted,
-        SetupConfigFile,
-        SetupUsers,
-        SetupFolders,
-        Done
-    };
-    [[nodiscard]] bool isUpgrade() const;
-    [[nodiscard]] bool isDowngrade() const;
-    [[nodiscard]] bool shouldTryUnbrandedToBrandedMigration() const;
-    [[nodiscard]] bool isUnbrandedToBrandedMigrationInProgress() const;
-    [[nodiscard]] bool shouldTryToMigrate() const;
-    /// Does the current app has a different version of the config version
-    [[nodiscard]] bool hasVersionChanged() const;
-    [[nodiscard]] bool isMigrationInProgress() const;
-    [[nodiscard]] MigrationPhase migrationPhase() const;
-    void setMigrationPhase(const MigrationPhase phase);
+    [[nodiscard]] QStringList backupConfigFiles();
+    void applyMigrationDefaults();
+
+    /// App-level macOS File Provider mode: when enabled, every account gets a file
+    /// provider domain and classic sync folders are unavailable (the File Provider
+    /// extension and the FinderSync extension cannot run at the same time).
+    [[nodiscard]] bool macFileProviderModeEnabled() const;
+    [[nodiscard]] bool macFileProviderModeEnabledIsSet() const;
+    void setMacFileProviderModeEnabled(bool enabled);
+
     static constexpr char unbrandedAppName[] = "Nextcloud";
     static constexpr char legacyAppName[] = "Owncloud";
 
@@ -338,8 +325,6 @@ private:
     using SharedCreds = QSharedPointer<AbstractCredentials>;
 
     static QString _confDir;
-    static QString _discoveredLegacyConfigPath;
-    static MigrationPhase _migrationPhase;
 };
 }
 #endif // CONFIGFILE_H

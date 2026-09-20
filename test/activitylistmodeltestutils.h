@@ -6,7 +6,7 @@
 #include <QJsonArray>
 #include <QVariantMap>
 
-#include "gui/tray/activitylistmodel.h"
+#include "gui/activity/activitylistmodel.h"
 
 #include "libsync/account.h"
 #include "gui/accountstate.h"
@@ -78,15 +78,15 @@ public:
         return maxActivities() + 1;
     }
 
-public slots:
+public Q_SLOTS:
     void startFetchJob() override;
     void startMaxActivitiesFetchJob();
     void slotProcessReceivedActivities();
 
-signals:
+Q_SIGNALS:
     void activitiesProcessed();
 
-private slots:
+private Q_SLOTS:
     void startFetchJobWithNumActivities(const int numActivities = 50);
 
 private:

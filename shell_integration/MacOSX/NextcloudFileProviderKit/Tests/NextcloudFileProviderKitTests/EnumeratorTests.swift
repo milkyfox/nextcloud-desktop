@@ -179,7 +179,8 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
             Int(storedFolderItem.contentModificationDate?.timeIntervalSince1970 ?? 0),
             Int(remoteFolder.modificationDate.timeIntervalSince1970)
         )
-        XCTAssertEqual(storedFolderItem.childItemCount?.intValue, 0) // Not visited yet, so no kids
+        // Not read yet, so the count is unknown rather than zero — see `Item.childItemCount`.
+        XCTAssertNil(storedFolderItem.childItemCount)
     }
 
     func testWorkingSetEnumeration() async throws {
@@ -310,7 +311,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         // --- Scenario A: Initial Paginated Request (isFollowUpPaginatedRequest == false) ---
 
         // 2. Act: Call readServerUrl for the first page.
-        let (initialMetadatas, _, _, _, initialNextPage, initialError) = await Enumerator.readServerUrl(
+        let initialReadResult = await Enumerator.readServerUrl(
             remoteFolder.remotePath,
             pageSettings: (page: nil, index: 0, size: 5), // index is 0
             account: Self.account,
@@ -318,6 +319,9 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
             dbManager: Self.dbManager,
             log: FileProviderLogMock()
         )
+        let initialMetadatas = initialReadResult.metadatas
+        let initialNextPage = initialReadResult.nextPage
+        let initialError = initialReadResult.error
 
         // 3. Assert: Verify the initial request's behavior.
         XCTAssertNil(initialError)
@@ -347,7 +351,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         // 4. Act: Call readServerUrl for the second page using the received page token.
         let followUpPage = try NSFileProviderPage(XCTUnwrap(initialNextPage?.token?.data(using: .utf8)))
 
-        let (followUpMetadatas, _, _, _, finalNextPage, followUpError) = await Enumerator.readServerUrl(
+        let followUpReadResult = await Enumerator.readServerUrl(
             remoteFolder.remotePath,
             pageSettings: (page: followUpPage, index: 1, size: 5), // index > 0 and page is non-nil
             account: Self.account,
@@ -355,6 +359,9 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
             dbManager: Self.dbManager,
             log: FileProviderLogMock()
         )
+        let followUpMetadatas = followUpReadResult.metadatas
+        let finalNextPage = followUpReadResult.nextPage
+        let followUpError = followUpReadResult.error
 
         // 5. Assert: Verify the follow-up request's behavior.
         XCTAssertNil(followUpError)
@@ -411,7 +418,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         // 2. Act
         let firstPageFiles = [parentNKFile] + childrenNKFiles
         let (firstPageResult, firstPageError) = Enumerator.handlePagedReadResults(
-            files: firstPageFiles, pageIndex: 0, dbManager: dbManager
+            files: firstPageFiles, pageIndex: 0, dbManager: dbManager, log: FileProviderLogMock()
         )
 
         // 3. Assert
@@ -435,7 +442,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         // --- Scenario B: Follow-up Page (pageIndex > 0) ---
         // 4. Act
         let (followUpPageResult, followUpPageError) = Enumerator.handlePagedReadResults(
-            files: followUpChildrenNKFiles, pageIndex: 1, dbManager: dbManager
+            files: followUpChildrenNKFiles, pageIndex: 1, dbManager: dbManager, log: FileProviderLogMock()
         )
 
         // 5. Assert
@@ -456,7 +463,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         rootNKFile.path = Self.account.davFilesUrl
 
         let (rootResult, rootError) = Enumerator.handlePagedReadResults(
-            files: [rootNKFile], pageIndex: 0, dbManager: dbManager
+            files: [rootNKFile], pageIndex: 0, dbManager: dbManager, log: FileProviderLogMock()
         )
 
         // 7. Assert
@@ -514,7 +521,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         }
 
         let (returnedMetadatas, error) = Enumerator.handlePagedReadResults(
-            files: [parentNKFile] + childrenNKFiles, pageIndex: 0, dbManager: dbManager
+            files: [parentNKFile] + childrenNKFiles, pageIndex: 0, dbManager: dbManager, log: FileProviderLogMock()
         )
         XCTAssertNil(error)
 
@@ -564,7 +571,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         }
 
         let (returnedMetadatas, error) = Enumerator.handlePagedReadResults(
-            files: followUpChildrenNKFiles, pageIndex: 1, dbManager: dbManager
+            files: followUpChildrenNKFiles, pageIndex: 1, dbManager: dbManager, log: FileProviderLogMock()
         )
         XCTAssertNil(error)
 
@@ -596,7 +603,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
 
         let parentNKFile = remoteFolder.toNKFile()
         let (_, error) = Enumerator.handlePagedReadResults(
-            files: [parentNKFile], pageIndex: 0, dbManager: dbManager
+            files: [parentNKFile], pageIndex: 0, dbManager: dbManager, log: FileProviderLogMock()
         )
         XCTAssertNil(error)
 
@@ -1623,9 +1630,9 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
             remoteInterface: remoteInterface,
             dbManager: Self.dbManager
         )
+        // 0, not nil: the enumeration above read this folder, so the empty result is knowledge.
         let childItemCount = storedFolderItem.childItemCount as? Int
-        let expectedChildItemCount = remoteFolder.children.count
-        XCTAssertEqual(childItemCount, expectedChildItemCount)
+        XCTAssertEqual(childItemCount, remoteFolder.children.count)
     }
 
     func testFolderWithFewItemsPaginatedEnumeration() async throws {
@@ -2088,7 +2095,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
         fileMetadata.downloaded = true
         Self.dbManager.addItemMetadata(fileMetadata)
 
-        let (_, _, _, _, _, readError) = await Enumerator.readServerUrl(
+        let readResult = await Enumerator.readServerUrl(
             Self.account.davFilesUrl + "/lockTokenTestFile.txt",
             account: Self.account,
             remoteInterface: remoteInterface,
@@ -2097,7 +2104,7 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
             log: FileProviderLogMock()
         )
 
-        XCTAssertNil(readError)
+        XCTAssertNil(readResult.error)
 
         let postRead = try XCTUnwrap(Self.dbManager.itemMetadata(ocId: "lockTokenTestFile"))
         XCTAssertEqual(
@@ -2105,5 +2112,476 @@ final class EnumeratorTests: NextcloudFileProviderKitTestCase {
             "local-lock-token-123",
             "lockToken must be preserved across target-depth reads"
         )
+    }
+
+    // MARK: - Batched enumeration (nextcloud/desktop #10266: >20000 items in one batch crash)
+
+    /// Seed `count` materialised files directly under the root, present unchanged on the server, all
+    /// synced just now so both the working-set scan and the pending-changes re-derivation report them.
+    @discardableResult
+    private func seedMaterialisedWorkingSetFiles(count: Int, syncTime: Date) -> Set<String> {
+        var expectedOcIds = Set<String>()
+        for i in 0 ..< count {
+            let item = MockRemoteItem(
+                identifier: "wsItem\(i)",
+                name: "wsItem\(i).txt",
+                remotePath: Self.account.davFilesUrl + "/wsItem\(i).txt",
+                account: Self.account.ncKitAccount,
+                username: Self.account.username,
+                userId: Self.account.id,
+                serverUrl: Self.account.serverUrl
+            )
+            item.parent = rootItem
+            rootItem.children.append(item)
+
+            var metadata = item.toItemMetadata(account: Self.account)
+            metadata.downloaded = true // materialised
+            metadata.syncTime = syncTime
+            Self.dbManager.addItemMetadata(metadata)
+            expectedOcIds.insert(metadata.ocId)
+        }
+        return expectedOcIds
+    }
+
+    func testWorkingSetChangesDeliveredInBatchesRespectingSuggestedBatchSize() async throws {
+        // The crash this fixes: the working-set change set was reported in a single batch, which the
+        // framework rejects past 100× the suggested size (≈20000). It must now be split into batches no
+        // larger than the suggested size, with no change dropped or duplicated, and without re-running the
+        // destructive scan on the framework's moreComing re-invocations.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let anchorDate = Date().addingTimeInterval(-300)
+        let anchor = Enumerator.syncAnchor(at: anchorDate)
+        let itemCount = 10
+        let batchSize = 3
+
+        let expectedOcIds = seedMaterialisedWorkingSetFiles(count: itemCount, syncTime: Date())
+
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockChangeObserver(enumerator: enumerator)
+        observer.suggestedBatchSize = batchSize
+
+        try await observer.enumerateChanges(from: anchor)
+
+        XCTAssertNil(observer.error, "Enumeration should complete without error.")
+
+        // Every change delivered exactly once, none dropped, none duplicated.
+        let reportedOcIds = observer.changedItems.map(\.itemIdentifier.rawValue)
+        XCTAssertEqual(reportedOcIds.count, itemCount, "No change should be duplicated across batches.")
+        XCTAssertEqual(Set(reportedOcIds), expectedOcIds, "Every change must be delivered across the batches.")
+
+        // Split into more than one batch.
+        XCTAssertGreaterThan(observer.finishes.count, 1, "A change set larger than the batch size must be split.")
+
+        // No batch exceeds the suggested size — this is what keeps the framework from asserting.
+        var previousTotal = 0
+        for total in observer.reportedCountsAtFinish {
+            XCTAssertLessThanOrEqual(total - previousTotal, batchSize, "No single batch may exceed the suggested batch size.")
+            previousTotal = total
+        }
+
+        // Intermediate batches use distinct continuation anchors; only the final batch advances the sync point.
+        let intermediateAnchors = observer.finishes.dropLast().map(\.anchor.rawValue)
+        for finish in observer.finishes.dropLast() {
+            XCTAssertTrue(finish.moreComing, "Non-final batches must report moreComing == true.")
+            XCTAssertNotEqual(finish.anchor.rawValue, anchor.rawValue, "Intermediate batches must return a continuation anchor.")
+        }
+        XCTAssertEqual(Set(intermediateAnchors).count, intermediateAnchors.count, "Continuation anchors must be unique.")
+        let finalFinish = try XCTUnwrap(observer.finishes.last)
+        XCTAssertFalse(finalFinish.moreComing, "The final batch must report moreComing == false.")
+        XCTAssertNotEqual(finalFinish.anchor.rawValue, anchor.rawValue, "The final batch must advance the working-set sync anchor.")
+
+        // The destructive scan ran once: one server read per materialised item, not once per batch.
+        XCTAssertLessThanOrEqual(
+            remoteInterface.readOperationCount,
+            itemCount + 2,
+            "Continuation batches must drain the buffer, not re-run the server scan."
+        )
+    }
+
+    func testWorkingSetChangesResumeAcrossNewEnumeratorInstances() async throws {
+        // fileproviderd may invalidate the enumerator after an intermediate batch. The continuation must
+        // therefore resume from durable state when the next request is handled by a new Enumerator.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let anchor = Enumerator.syncAnchor(at: Date().addingTimeInterval(-300))
+        let itemCount = 10
+        let batchSize = 3
+        let expectedOcIds = seedMaterialisedWorkingSetFiles(count: itemCount, syncTime: Date())
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+
+        let firstEnumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let firstObserver = MockChangeObserver(enumerator: firstEnumerator)
+        firstObserver.suggestedBatchSize = batchSize
+        firstEnumerator.enumerateChanges(for: firstObserver, from: anchor)
+
+        for _ in 0 ..< 5000 {
+            if !firstObserver.finishes.isEmpty || firstObserver.error != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        XCTAssertNil(firstObserver.error)
+        let firstFinish = try XCTUnwrap(firstObserver.finishes.first)
+        XCTAssertTrue(firstFinish.moreComing)
+
+        var reportedOcIds = firstObserver.changedItems.map(\.itemIdentifier.rawValue)
+        var currentAnchor = firstFinish.anchor
+        var continuationAnchors = Set<Data>([currentAnchor.rawValue])
+        var batchCount = 1
+        var moreComing = firstFinish.moreComing
+
+        while moreComing, batchCount < 10 {
+            let nextEnumerator = try Enumerator(
+                enumeratedItemIdentifier: .workingSet,
+                account: Self.account,
+                remoteInterface: remoteInterface,
+                dbManager: Self.dbManager,
+                log: FileProviderLogMock()
+            )
+            let nextObserver = MockChangeObserver(enumerator: nextEnumerator)
+            nextObserver.suggestedBatchSize = batchSize
+            nextEnumerator.enumerateChanges(for: nextObserver, from: currentAnchor)
+
+            for _ in 0 ..< 5000 {
+                if !nextObserver.finishes.isEmpty || nextObserver.error != nil {
+                    break
+                }
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+
+            XCTAssertNil(nextObserver.error)
+            let finish = try XCTUnwrap(nextObserver.finishes.first)
+            reportedOcIds += nextObserver.changedItems.map(\.itemIdentifier.rawValue)
+            XCTAssertTrue(
+                continuationAnchors.insert(finish.anchor.rawValue).inserted,
+                "Each intermediate continuation must identify a distinct durable cursor."
+            )
+            currentAnchor = finish.anchor
+            batchCount += 1
+            moreComing = finish.moreComing
+        }
+
+        XCTAssertEqual(batchCount, 4, "Ten items with a batch size of three require four batches.")
+        XCTAssertEqual(reportedOcIds.count, itemCount)
+        XCTAssertEqual(Set(reportedOcIds), expectedOcIds)
+        XCTAssertNotEqual(currentAnchor.rawValue, anchor.rawValue)
+        XCTAssertLessThanOrEqual(
+            remoteInterface.readOperationCount,
+            itemCount + 2,
+            "New enumerator instances must drain the persisted snapshot without re-reading the server."
+        )
+    }
+
+    func testWorkingSetChangesReportSingleBatchWhenUnderCap() async throws {
+        // With no system suggestion the default batch size applies, so a small change set is delivered in
+        // exactly one batch — preserving the pre-existing single-batch behaviour and the final anchor.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let anchorDate = Date().addingTimeInterval(-300)
+        let anchor = Enumerator.syncAnchor(at: anchorDate)
+        let expectedOcIds = seedMaterialisedWorkingSetFiles(count: 3, syncTime: Date())
+
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockChangeObserver(enumerator: enumerator)
+
+        try await observer.enumerateChanges(from: anchor)
+
+        XCTAssertNil(observer.error)
+        XCTAssertEqual(Set(observer.changedItems.map(\.itemIdentifier.rawValue)), expectedOcIds)
+        XCTAssertEqual(observer.finishes.count, 1, "A change set under the cap must be a single batch.")
+        XCTAssertEqual(observer.finishes.first?.moreComing, false)
+    }
+
+    func testWorkingSetChangesEmptyReportsSingleFinalBatch() async throws {
+        // No materialised items, no changes: exactly one finish, moreComing == false, advancing the anchor.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let anchor = Enumerator.syncAnchor(at: Date().addingTimeInterval(-300))
+        let remoteInterface = MockRemoteInterface(account: Self.account, rootItem: rootItem)
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockChangeObserver(enumerator: enumerator)
+
+        try await observer.enumerateChanges(from: anchor)
+
+        XCTAssertNil(observer.error)
+        XCTAssertTrue(observer.changedItems.isEmpty)
+        XCTAssertTrue(observer.deletedItemIdentifiers.isEmpty)
+        XCTAssertEqual(observer.finishes.count, 1)
+        XCTAssertEqual(observer.finishes.first?.moreComing, false)
+    }
+
+    func testWorkingSetItemsArePaginatedUnderSuggestedPageSize() async throws {
+        // The working-set item enumeration read all materialised items in a single page. It must now be
+        // paged under the suggested page size, delivering every item exactly once across the pages.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let itemCount = 7
+        let expectedOcIds = seedMaterialisedWorkingSetFiles(count: itemCount, syncTime: Date())
+
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: MockRemoteInterface(account: Self.account, rootItem: rootItem),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockEnumerationObserver(enumerator: enumerator)
+        observer.suggestedPageSize = 2
+
+        try await observer.enumerateItems()
+
+        XCTAssertNil(observer.error)
+        let reportedOcIds = observer.items.map(\.itemIdentifier.rawValue)
+        XCTAssertEqual(reportedOcIds.count, itemCount, "No item should be duplicated across pages.")
+        XCTAssertEqual(Set(reportedOcIds), expectedOcIds, "Every materialised item must be delivered across the pages.")
+        XCTAssertGreaterThan(observer.observedPages.count, 1, "A materialised set larger than the page size must be paged.")
+        for page in observer.observedPages {
+            XCTAssertLessThanOrEqual(page.rawValue.count, 500, "Continuation pages must stay within the 500-byte limit.")
+        }
+    }
+
+    func testContainerChangesDeliveredInBatches() async throws {
+        // A regular container's change set must also batch under the suggested size.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        // Folder known locally (unchanged etag) with several brand-new children on the server.
+        var folderMetadata = remoteFolder.toItemMetadata(account: Self.account)
+        folderMetadata.downloaded = true
+        Self.dbManager.addItemMetadata(folderMetadata)
+
+        let childCount = 8
+        let batchSize = 3
+        remoteFolder.children = []
+        var expectedChildIds = Set<String>()
+        for i in 0 ..< childCount {
+            let child = MockRemoteItem(
+                identifier: "newChild\(i)",
+                name: "newChild\(i).txt",
+                remotePath: Self.account.davFilesUrl + "/folder/newChild\(i).txt",
+                account: Self.account.ncKitAccount,
+                username: Self.account.username,
+                userId: Self.account.id,
+                serverUrl: Self.account.serverUrl
+            )
+            child.parent = remoteFolder
+            remoteFolder.children.append(child)
+            expectedChildIds.insert(child.identifier)
+        }
+
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .init(remoteFolder.identifier),
+            account: Self.account,
+            remoteInterface: MockRemoteInterface(account: Self.account, rootItem: rootItem),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockChangeObserver(enumerator: enumerator)
+        observer.suggestedBatchSize = batchSize
+
+        try await observer.enumerateChanges()
+
+        XCTAssertNil(observer.error)
+
+        // Every new child reported.
+        let reportedIds = Set(observer.changedItems.map(\.itemIdentifier.rawValue))
+        XCTAssertTrue(reportedIds.isSuperset(of: expectedChildIds), "Every new child must be reported.")
+
+        // Split into batches, none exceeding the cap.
+        XCTAssertGreaterThan(observer.finishes.count, 1, "A container change set larger than the batch size must be split.")
+        var previousTotal = 0
+        for total in observer.reportedCountsAtFinish {
+            XCTAssertLessThanOrEqual(total - previousTotal, batchSize, "No container-change batch may exceed the suggested batch size.")
+            previousTotal = total
+        }
+        XCTAssertEqual(observer.finishes.last?.moreComing, false)
+    }
+
+    func testWorkingSetChangesBatchMixingUpdatesAndDeletions() async throws {
+        // An overflowing change set containing BOTH updates and deletions: exercises takeBatch's combined
+        // update+delete budget, deletions landing in later batches, and the per-batch hard-removal of
+        // delivered deletions across batch boundaries.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let anchorDate = Date().addingTimeInterval(-300)
+        let anchor = Enumerator.syncAnchor(at: anchorDate)
+        let now = Date()
+        let batchSize = 3
+
+        // Updates: materialised files present unchanged on the server.
+        let expectedUpdated = seedMaterialisedWorkingSetFiles(count: 4, syncTime: now)
+
+        // Deletions: materialised files soft-deleted in the DB after the anchor. The scan skips deleted
+        // rows, so these surface only via pendingWorkingSetChanges; they need not exist on the server.
+        var expectedDeleted = Set<String>()
+        for i in 0 ..< 4 {
+            let item = MockRemoteItem(
+                identifier: "wsDel\(i)",
+                name: "wsDel\(i).txt",
+                remotePath: Self.account.davFilesUrl + "/wsDel\(i).txt",
+                account: Self.account.ncKitAccount,
+                username: Self.account.username,
+                userId: Self.account.id,
+                serverUrl: Self.account.serverUrl
+            )
+            var metadata = item.toItemMetadata(account: Self.account)
+            metadata.downloaded = true // materialised
+            metadata.deleted = true
+            metadata.syncTime = now
+            Self.dbManager.addItemMetadata(metadata)
+            expectedDeleted.insert(metadata.ocId)
+        }
+
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: MockRemoteInterface(account: Self.account, rootItem: rootItem),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockChangeObserver(enumerator: enumerator)
+        observer.suggestedBatchSize = batchSize
+
+        try await observer.enumerateChanges(from: anchor)
+
+        XCTAssertNil(observer.error)
+
+        // Updates and deletions both delivered in full, exactly once.
+        XCTAssertEqual(Set(observer.changedItems.map(\.itemIdentifier.rawValue)), expectedUpdated)
+        XCTAssertEqual(observer.changedItems.count, expectedUpdated.count, "No update duplicated across batches.")
+        XCTAssertEqual(Set(observer.deletedItemIdentifiers.map(\.rawValue)), expectedDeleted)
+        XCTAssertEqual(observer.deletedItemIdentifiers.count, expectedDeleted.count, "No deletion duplicated across batches.")
+
+        // Split into batches, each within the cap (combined updates + deletions).
+        XCTAssertGreaterThan(observer.finishes.count, 1)
+        var previousTotal = 0
+        for total in observer.reportedCountsAtFinish {
+            XCTAssertLessThanOrEqual(total - previousTotal, batchSize, "No batch may exceed the cap, counting updates and deletions together.")
+            previousTotal = total
+        }
+
+        // Every delivered deletion's row is hard-removed by the time its (possibly later) batch finishes.
+        for deletedOcId in expectedDeleted {
+            XCTAssertNil(Self.dbManager.itemMetadata(ocId: deletedOcId), "Delivered deletions must be hard-removed across batch boundaries.")
+        }
+
+        // Anchors stay within the framework's 500-byte page/anchor limit.
+        for finish in observer.finishes {
+            XCTAssertLessThanOrEqual(finish.anchor.rawValue.count, 500, "Sync anchors must stay under the 500-byte limit.")
+        }
+    }
+
+    func testEffectiveBatchSizeClampsAndFallsBack() throws {
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .workingSet,
+            account: Self.account,
+            remoteInterface: MockRemoteInterface(account: Self.account),
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+
+        XCTAssertEqual(enumerator.effectiveBatchSize(suggested: nil), 1000, "Unset falls back to the default.")
+        XCTAssertEqual(enumerator.effectiveBatchSize(suggested: 0), 1000, "Zero falls back to the default.")
+        XCTAssertEqual(enumerator.effectiveBatchSize(suggested: -5), 1000, "Negative falls back to the default.")
+        XCTAssertEqual(enumerator.effectiveBatchSize(suggested: 200), 200, "A sane suggestion is honoured verbatim.")
+        XCTAssertEqual(enumerator.effectiveBatchSize(suggested: 99999), 4000, "A huge suggestion is clamped below the framework ceiling.")
+    }
+
+    func testTrashChangesDeliveredInBatches() async throws {
+        // A large permanent purge of trash items must batch its deletions under the suggested size.
+        let db = Self.dbManager.ncDatabase()
+        debugPrint(db)
+
+        let remoteInterface = MockRemoteInterface(
+            account: Self.account, rootItem: rootItem, rootTrashItem: rootTrashItem
+        )
+        // Remote trash empty → every local trash row is orphaned (permanently deleted remotely).
+        rootTrashItem.children = []
+
+        let trashCount = 8
+        let batchSize = 3
+        var expectedOcIds = Set<String>()
+        for i in 0 ..< trashCount {
+            let item = MockRemoteItem(
+                identifier: "trashBatch\(i)",
+                name: "trashBatch\(i).txt",
+                remotePath: Self.account.trashUrl + "/trashBatch\(i).txt",
+                data: Data(repeating: 1, count: 8),
+                account: Self.account.ncKitAccount,
+                username: Self.account.username,
+                userId: Self.account.id,
+                serverUrl: Self.account.serverUrl
+            )
+            let metadata = item.toNKTrash().toItemMetadata(account: Self.account)
+            Self.dbManager.addItemMetadata(metadata)
+            expectedOcIds.insert(metadata.ocId)
+        }
+
+        let enumerator = try Enumerator(
+            enumeratedItemIdentifier: .trashContainer,
+            account: Self.account,
+            remoteInterface: remoteInterface,
+            dbManager: Self.dbManager,
+            log: FileProviderLogMock()
+        )
+        let observer = MockChangeObserver(enumerator: enumerator)
+        observer.suggestedBatchSize = batchSize
+
+        try await observer.enumerateChanges()
+
+        XCTAssertNil(observer.error)
+        XCTAssertTrue(observer.changedItems.isEmpty, "Trash reports only deletions.")
+        XCTAssertEqual(Set(observer.deletedItemIdentifiers.map(\.rawValue)), expectedOcIds, "Every orphan must be reported.")
+        XCTAssertEqual(observer.deletedItemIdentifiers.count, trashCount, "No orphan duplicated across batches.")
+
+        XCTAssertGreaterThan(observer.finishes.count, 1, "A large purge must be split into batches.")
+        var previousTotal = 0
+        for total in observer.reportedCountsAtFinish {
+            XCTAssertLessThanOrEqual(total - previousTotal, batchSize, "No trash batch may exceed the suggested batch size.")
+            previousTotal = total
+        }
+        XCTAssertEqual(observer.finishes.last?.moreComing, false)
+
+        // Delivered orphans are soft-deleted by the time their batch finishes.
+        for ocId in expectedOcIds {
+            XCTAssertEqual(Self.dbManager.itemMetadata(ocId: ocId)?.deleted, true, "Delivered trash orphans must be soft-deleted.")
+        }
     }
 }

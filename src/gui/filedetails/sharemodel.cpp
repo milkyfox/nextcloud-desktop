@@ -93,8 +93,6 @@ QVariant ShareModel::data(const QModelIndex &index, const int role) const
         switch (role) {
         case LinkRole:
             return linkShare->getLink();
-        case LinkShareNameRole:
-            return linkShare->getName();
         case LinkShareLabelRole:
             return linkShare->getLabel();
         case NoteEnabledRole:
@@ -184,7 +182,6 @@ QVariant ShareModel::data(const QModelIndex &index, const int role) const
     case HideDownloadEnabledRole:
         return false;
     case LinkRole:
-    case LinkShareNameRole:
     case LinkShareLabelRole:
     case NoteRole:
     case ExpireDateRole:
@@ -292,7 +289,7 @@ void ShareModel::updateData()
         && (_sharedItemType != SharedItemType::SharedItemTypeEncryptedTopLevelFolder
             || fileRecord._e2eEncryptionStatus < SyncJournalFileRecord::EncryptionStatus::EncryptedMigratedV2_0);
     if (prevIsShareDisabledEncryptedFolder != _isShareDisabledEncryptedFolder) {
-        emit isShareDisabledEncryptedFolderChanged();
+        Q_EMIT isShareDisabledEncryptedFolderChanged();
     }
 
     // Will get added when shares are fetched if no link shares are fetched
@@ -370,7 +367,7 @@ void ShareModel::initShareManager()
             }
 
             qCWarning(lcShareModel) << "Error from server from ShareManager class and initShareManager" << code << message;
-            emit serverError(code, message);
+            Q_EMIT serverError(code, message);
         });
 
         _manager->fetchShares(_sharePath);
@@ -666,7 +663,6 @@ void ShareModel::slotAddShare(const SharePtr &share)
 
     if (const auto linkShare = share.objectCast<LinkShare>()) {
         connect(linkShare.data(), &LinkShare::noteSet, this, [this, shareId]{ slotShareNoteSet(shareId); });
-        connect(linkShare.data(), &LinkShare::nameSet, this, [this, shareId]{ slotShareNameSet(shareId); });
         connect(linkShare.data(), &LinkShare::labelSet, this, [this, shareId]{ slotShareLabelSet(shareId); });
         connect(linkShare.data(), &LinkShare::expireDateSet, this, [this, shareId]{ slotShareExpireDateSet(shareId); });
         connect(linkShare.data(), &LinkShare::hideDownloadSet, this, [this, shareId] { slotHideDownloadSet(shareId); });
@@ -908,17 +904,6 @@ void ShareModel::slotShareNoteSet(const QString &shareId)
     Q_EMIT dataChanged(shareModelIndex, shareModelIndex, { NoteEnabledRole, NoteRole });
 }
 
-void ShareModel::slotShareNameSet(const QString &shareId)
-{
-    if (shareId.isEmpty() || !_shareIdIndexHash.contains(shareId)) {
-        return;
-    }
-
-    const auto sharePersistentModelIndex = _shareIdIndexHash.value(shareId);
-    const auto shareModelIndex = index(sharePersistentModelIndex.row());
-    Q_EMIT dataChanged(shareModelIndex, shareModelIndex, { LinkShareNameRole });
-}
-
 void ShareModel::slotShareLabelSet(const QString &shareId)
 {
     if (shareId.isEmpty() || !_shareIdIndexHash.contains(shareId)) {
@@ -957,7 +942,7 @@ void ShareModel::slotDeleteE2EeShare(const SharePtr &share) const
 
     auto folder = FolderMan::instance()->folder(folderAlias);
     if (!folder || !folder->journalDb()) {
-        emit serverError(404, tr("Could not find local folder for %1").arg(share->path()));
+        Q_EMIT serverError(404, tr("Could not find local folder for %1").arg(share->path()));
         return;
     }
 
@@ -975,7 +960,7 @@ void ShareModel::slotDeleteE2EeShare(const SharePtr &share) const
     connect(removeE2eeShareJob, &UpdateE2eeFolderUsersMetadataJob::finished, this, [share, this](int code, const QString &message) {
         if (code != 200) {
             qCWarning(lcShareModel) << "Could not remove share from E2EE folder's metadata!";
-            emit serverError(code, message);
+            Q_EMIT serverError(code, message);
             return;
         }
         share->deleteShare();

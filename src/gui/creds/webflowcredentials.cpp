@@ -11,10 +11,7 @@
 #include "account.h"
 #include "configfile.h"
 #include "theme.h"
-#ifdef WITH_WEBENGINE
-#include "wizard/webview.h"
-#endif // WITH_WEBENGINE
-#include "webflowcredentialsdialog.h"
+#include "wizard/browserreauthwindow.h"
 #include "networkjobs.h"
 
 #include <QAuthenticator>
@@ -22,9 +19,6 @@
 #include <QNetworkReply>
 #include <QPointer>
 #include <QTimer>
-#include <QDialog>
-#include <QVBoxLayout>
-#include <QLabel>
 
 using namespace QKeychain;
 
@@ -140,7 +134,7 @@ void WebFlowCredentials::fetchFromKeychain(const QString &appName) {
     fetchUser();
 
     if (ready()) {
-        emit fetched();
+        Q_EMIT fetched();
     } else {
         qCInfo(lcWebFlowCredentials()) << "Fetch from keychain!";
         fetchFromKeychainHelper();
@@ -148,43 +142,31 @@ void WebFlowCredentials::fetchFromKeychain(const QString &appName) {
 }
 
 void WebFlowCredentials::askFromUser() {
-    // Determine if the old flow has to be used (GS for now)
-    // Do a DetermineAuthTypeJob to make sure that the server is still using Flow2
-    auto job = new DetermineAuthTypeJob(_account->sharedFromThis(), this);
-    connect(job, &DetermineAuthTypeJob::authType, [this](DetermineAuthTypeJob::AuthType type) {
-    // LoginFlowV2 > WebViewFlow > Shib > Basic
-#ifdef WITH_WEBENGINE
-        bool useFlow2 = (type != DetermineAuthTypeJob::WebViewFlow);
-#else // WITH_WEBENGINE
-        Q_UNUSED(type)
-        bool useFlow2 = true;
-#endif // WITH_WEBENGINE
+    if (_reAuthWindow) {
+        _reAuthWindow->show();
+        return;
+    }
 
-        _askDialog = new WebFlowCredentialsDialog(_account, useFlow2);
+    _reAuthWindow = new BrowserReAuthWindow(_account, this);
 
-        if (!useFlow2) {
-            QUrl url = _account->url();
-            QString path = url.path() + "/index.php/login/flow";
-            url.setPath(path);
-            _askDialog->setUrl(url);
-        }
+    QString msg = tr("You have been logged out of your account %1 at %2. Please login again.")
+                      .arg(_account->prettyName(), _account->url().toDisplayString());
+    _reAuthWindow->setInfoText(msg);
 
-        QString msg = tr("You have been logged out of your account %1 at %2. Please login again.")
-                          .arg(_account->prettyName(), _account->url().toDisplayString());
-        _askDialog->setInfo(msg);
+    connect(_reAuthWindow, &BrowserReAuthWindow::credentialsReady, this, &WebFlowCredentials::slotAskFromUserCredentialsProvided);
+    connect(_reAuthWindow, &BrowserReAuthWindow::cancelled, this, &WebFlowCredentials::slotAskFromUserCancelled);
 
-        _askDialog->show();
-
-        connect(_askDialog, &WebFlowCredentialsDialog::urlCatched, this, &WebFlowCredentials::slotAskFromUserCredentialsProvided);
-        connect(_askDialog, &WebFlowCredentialsDialog::onClose, this, &WebFlowCredentials::slotAskFromUserCancelled);
-    });
-    job->start();
+    _reAuthWindow->show();
 
     qCDebug(lcWebFlowCredentials()) << "User needs to reauth!";
 }
 
-void WebFlowCredentials::slotAskFromUserCredentialsProvided(const QString &user, const QString &pass, const QString &host) {
-    Q_UNUSED(host)
+void WebFlowCredentials::slotAskFromUserCredentialsProvided(const QString &user, const QString &pass) {
+    auto *const reAuthWindow = qobject_cast<BrowserReAuthWindow *>(sender());
+    if (!reAuthWindow || reAuthWindow != _reAuthWindow) {
+        return;
+    }
+    _reAuthWindow = nullptr;
 
     qCInfo(lcWebFlowCredentials()) << "Obtained a new password";
 
@@ -193,19 +175,19 @@ void WebFlowCredentials::slotAskFromUserCredentialsProvided(const QString &user,
     _ready = true;
     _credentialsValid = true;
     persist();
-    emit asked();
-
-    _askDialog->close();
-    _askDialog = nullptr;
+    Q_EMIT asked();
 }
 
 void WebFlowCredentials::slotAskFromUserCancelled() {
+    auto *const reAuthWindow = qobject_cast<BrowserReAuthWindow *>(sender());
+    if (!reAuthWindow || reAuthWindow != _reAuthWindow) {
+        return;
+    }
+    _reAuthWindow = nullptr;
+
     qCDebug(lcWebFlowCredentials()) << "User cancelled reauth!";
 
-    emit asked();
-
-    _askDialog->deleteLater();
-    _askDialog = nullptr;
+    Q_EMIT asked();
 }
 
 bool WebFlowCredentials::stillValid(QNetworkReply *reply) {
@@ -339,7 +321,7 @@ void WebFlowCredentials::slotWriteJobDone(QKeychain::Job *job)
     default:
         qCWarning(lcWebFlowCredentials) << "Error while writing password" << job->errorString();
     }
-    emit credentialsPersisted();
+    Q_EMIT credentialsPersisted();
 }
 
 void WebFlowCredentials::invalidateToken() {
@@ -558,7 +540,7 @@ void WebFlowCredentials::slotReadPasswordJobDone(Job *incomingJob) {
     } else {
         _ready = false;
     }
-    emit fetched();
+    Q_EMIT fetched();
 
     // If keychain data was read from legacy location, wipe these entries and store new ones
     if (_keychainMigration && _ready) {

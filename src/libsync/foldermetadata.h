@@ -40,7 +40,7 @@ class OWNCLOUDSYNC_EXPORT FolderMetadata : public QObject
         QString userId;
         QByteArray decryptedFiledropKey;
 
-        inline bool isValid() const
+        [[nodiscard]] inline bool isValid() const
         {
             return !userId.isEmpty() && !decryptedFiledropKey.isEmpty();
         }
@@ -52,8 +52,8 @@ class OWNCLOUDSYNC_EXPORT FolderMetadata : public QObject
         QByteArray nonce;
         QByteArray authenticationTag;
         UserWithFileDropEntryAccess currentUser;
-        
-        inline bool isValid() const
+
+        [[nodiscard]] inline bool isValid() const
         {
             return !cipherText.isEmpty() && !nonce.isEmpty() && !authenticationTag.isEmpty();
         }
@@ -67,7 +67,7 @@ public:
         QByteArray authenticationTag;
         QString encryptedFilename;
         QString originalFilename;
-        bool isDirectory() const;
+        [[nodiscard]] bool isDirectory() const;
     };
 
     enum class FolderType {
@@ -92,7 +92,7 @@ public:
     };
     Q_ENUM(MetadataVersion)
 
-    FolderMetadata(AccountPtr account, const QString &remoteFolderRoot, FolderType folderType = FolderType::Nested);
+    FolderMetadata(AccountPtr account, const QString &remoteFolderRoot, FolderType folderType);
     /*
     * construct metadata based on RootEncryptedFolderInfo
     * as per E2EE V2, the encryption key and users that have access are only stored in root(top-level) encrypted folder's metadata
@@ -103,6 +103,7 @@ public:
                    const QByteArray &metadata,
                    const RootEncryptedFolderInfo &rootEncryptedFolderInfo,
                    const QByteArray &signature,
+                   FolderType folderType,
                    QObject *parent = nullptr);
 
     [[nodiscard]] QVector<EncryptedFile> files() const;
@@ -145,9 +146,9 @@ public:
 
     static MetadataVersion setupVersionFromExistingMetadata(const QByteArray &metadata);
 
-public slots:
-    void addEncryptedFile(const OCC::FolderMetadata::EncryptedFile &f);
-    void removeEncryptedFile(const OCC::FolderMetadata::EncryptedFile &f);
+public Q_SLOTS:
+    [[nodiscard]] bool addEncryptedFile(const OCC::FolderMetadata::EncryptedFile &f);
+    [[nodiscard]] bool removeEncryptedFile(const QString &originalFilename);
     void removeAllEncryptedFiles();
 
 private:
@@ -171,6 +172,8 @@ private:
 
     [[nodiscard]] QJsonObject convertFileToJsonObject(const EncryptedFile *encryptedFile) const;
 
+    [[nodiscard]] static bool isOriginalFilenameValid(const QString &originalFilename);
+
     [[nodiscard]] MetadataVersion latestSupportedMetadataVersion() const;
 
     [[nodiscard]] bool parseFileDropPart(const QJsonDocument &doc);
@@ -182,7 +185,7 @@ private:
 
     static QByteArray prepareMetadataForSignature(const QJsonDocument &fullMetadata);
 
-private slots:
+private Q_SLOTS:
     void initMetadata();
     void initEmptyMetadata();
     void initEmptyMetadataLegacy();
@@ -198,7 +201,7 @@ private slots:
 
     void emitSetupComplete();
 
-signals:
+Q_SIGNALS:
     void setupComplete();
 
 private:

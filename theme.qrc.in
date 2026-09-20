@@ -192,6 +192,7 @@
 		<file>theme/black/caret-down.svg</file>
 		<file>theme/black/change.svg</file>
 		<file>theme/black/clear.svg</file>
+		<file>theme/black/filter.svg</file>
 		<file>theme/black/close.svg</file>
 		<file>theme/black/comment.svg</file>
 		<file>theme/black/confirm.svg</file>
@@ -269,11 +270,18 @@
   		<file>theme/white/error.svg</file>
 	
 		<!-- generic (not themed) -->
+		<file>theme/arrow-left.svg</file>
+		<file>theme/arrow-right.svg</file>
 		<file>theme/sync-arrow.svg</file>
 		<file>theme/close.svg</file>
+		<file>theme/pause.svg</file>
+		<file>theme/play.svg</file>
+		<file>theme/back.svg</file>
+		<file>theme/person_add.svg</file>
 		<file>theme/files.svg</file>
 		<file>theme/public.svg</file>
 		<file>theme/settings.svg</file>
+		<file>theme/advanced.svg</file>
 		<file>theme/confirm.svg</file>
 		<file>theme/copy.svg</file>
 		<file>theme/more.svg</file>
@@ -294,10 +302,12 @@
 		<file>theme/send.svg</file>
 		<file>theme/talk-app.svg</file>
 		<file>theme/chevron-double-up.svg</file>
-		<file>theme/call-notification.wav</file>
+		@CALL_NOTIFICATION_WAV_FILE_ENTRY@
   		<file>theme/info.svg</file>
+		<file>theme/file-clock-outline.svg</file>
 		<file>theme/file-open.svg</file>
 		<file>theme/backup.svg</file>
 		<file>theme/convert_to_text.svg</file>
+		<file>theme/security.svg</file>
     </qresource>
 </RCC>

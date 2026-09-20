@@ -32,6 +32,10 @@
 #include <QQuickWindow>
 #include <QSurfaceFormat>
 #include <QOperatingSystemVersion>
+#include <QQmlExtensionPlugin>
+
+Q_IMPORT_QML_PLUGIN(com_nextcloud_desktopclient_searchPlugin)
+Q_IMPORT_QML_PLUGIN(com_nextcloud_desktopclient_sharingPlugin)
 
 using namespace OCC;
 
@@ -51,14 +55,6 @@ void warnSystray()
 
 int main(int argc, char **argv)
 {
-#ifdef Q_OS_LINUX
-    const auto appImagePath = qEnvironmentVariable("APPIMAGE");
-    const auto runningInsideAppImage = !appImagePath.isNull() && QFile::exists(appImagePath);
-    if (runningInsideAppImage) {
-        qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu-compositing");
-    }
-#endif
-
 #ifdef Q_OS_WIN
     SetDllDirectory(L"");
     qputenv("QML_IMPORT_PATH", (QDir::currentPath() + QStringLiteral("/qml")).toLatin1());
@@ -66,6 +62,7 @@ int main(int argc, char **argv)
 
     Q_INIT_RESOURCE(resources);
     Q_INIT_RESOURCE(theme);
+    Q_INIT_RESOURCE(assistant);
 
     // OpenSSL 1.1.0: No explicit initialisation or de-initialisation is necessary.
 #ifdef Q_OS_MACOS
@@ -103,6 +100,11 @@ int main(int argc, char **argv)
 #endif
 
     QQuickStyle::setStyle(qmlStyle);
+
+#if defined KF6DBusAddons_FOUND && KF6DBusAddons_FOUND
+    QCoreApplication::setOrganizationDomain(QLatin1String(APPLICATION_REV_DOMAIN_DBUS));
+    QCoreApplication::setApplicationName(QLatin1String(APPLICATION_EXECUTABLE));
+#endif
 
     OCC::Application app(argc, argv);
 
@@ -159,8 +161,9 @@ int main(int argc, char **argv)
         QStringList args = app.arguments();
         if (args.size() > 1) {
             QString msg = args.join(QLatin1String("|"));
-            if (!app.sendMessage(QLatin1String("MSG_PARSEOPTIONS:") + msg))
+            if (!app.sendMessage(QLatin1String("MSG_PARSEOPTIONS:") + msg)) {
                 return -1;
+            }
         } else if (!app.backgroundMode() && !app.sendMessage(QLatin1String("MSG_SHOWMAINDIALOG"))) {
             return -1;
         }

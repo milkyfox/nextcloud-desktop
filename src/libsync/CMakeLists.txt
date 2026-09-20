@@ -148,8 +148,6 @@ set(libsync_SRCS
     rootencryptedfolderinfo.cpp
     foldermetadata.h
     foldermetadata.cpp
-    ocsassistantconnector.h
-    ocsassistantconnector.cpp
     ocsuserstatusconnector.h
     ocsuserstatusconnector.cpp
     rootencryptedfolderinfo.cpp
@@ -170,11 +168,24 @@ set(libsync_SRCS
     creds/keychainchunk.cpp
     caseclashconflictsolver.h
     caseclashconflictsolver.cpp
+    settings/migration.h
+    settings/migration.cpp
+    chronoelapsedtimer.h
+    chronoelapsedtimer.cpp
+    hydrationjob.h
+    hydrationjob.cpp
 )
 
 if (WIN32)
     # to fix warnings from ntstatus.h
     add_definitions(-DUMDF_USING_NTSTATUS)
+endif()
+
+if(APPLE)
+    list(APPEND libsync_SRCS
+        theme_mac.h
+        theme_mac.mm
+    )
 endif()
 
 if(TOKEN_AUTH_ONLY)
@@ -205,6 +216,19 @@ set(creds_HEADERS
     creds/httpcredentials.h
 )
 
+try_compile(HAS_CLOCK_CAST
+        SOURCE_FROM_CONTENT chrono_test.cpp "
+#include <chrono>
+int main() {
+    std::chrono::clock_cast<std::chrono::system_clock>;
+}"
+)
+message(STATUS "HAS_CLOCK_CAST: ${HAS_CLOCK_CAST}")
+
+if(HAS_CLOCK_CAST)
+    set_source_files_properties(filesystem.cpp PROPERTIES COMPILE_DEFINITIONS HAS_CLOCK_CAST)
+endif()
+
 IF (NOT APPLE)
     INSTALL(
         FILES ${owncloudsync_HEADERS}
@@ -214,7 +238,7 @@ IF (NOT APPLE)
         FILES ${creds_HEADERS}
 	DESTINATION ${INCLUDE_INSTALL_DIR}/nextcloudsync/creds
     )
-ENDIF(NOT APPLE)
+ENDIF()
 
 find_package(Qt${QT_MAJOR_VERSION} REQUIRED COMPONENTS WebSockets Xml Sql Gui Svg Widgets)
 
@@ -240,12 +264,26 @@ target_link_libraries(nextcloudsync
   Qt::Core5Compat
 )
 
+# needed to allow the dynamic load of the openvfs based VFS plug-in inside the AppImage package
+find_package(OpenVFS 0.1.0 QUIET)
+set_package_properties(OpenVFS PROPERTIES TYPE OPTIONAL
+        DESCRIPTION "A Virtual Filesystem Layer for cloud storages for the free desktop"
+        URL "https://github.com/opencloud-eu/openvfs/")
+
+if(TARGET OpenVFS::OpenVFS)
+    target_link_libraries(nextcloudsync
+      PUBLIC
+      OpenVFS::LibOpenVFS
+  )
+endif()
+
 target_compile_features(nextcloudsync
     PRIVATE
         cxx_std_17
 )
 
 target_compile_definitions(nextcloudsync PRIVATE OPENSSL_SUPPRESS_DEPRECATED)
+target_compile_definitions(nextcloudsync PRIVATE QT_NO_KEYWORDS)
 
 if (NOT TOKEN_AUTH_ONLY)
     find_package(Qt${QT_MAJOR_VERSION} COMPONENTS REQUIRED Widgets Svg)

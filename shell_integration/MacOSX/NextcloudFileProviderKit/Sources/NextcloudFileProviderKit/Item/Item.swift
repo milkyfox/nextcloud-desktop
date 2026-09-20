@@ -23,6 +23,14 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
     private let displayFileActions: Bool
     private let remoteSupportsTrash: Bool
 
+    private var lockStateAllowsModifications: Bool {
+        metadata.lock == false || (
+            metadata.lockOwnerType == NKLockType.token.rawValue &&
+                metadata.ownerId == metadata.lockOwner &&
+                metadata.lockToken != nil
+        )
+    }
+
     public var itemIdentifier: NSFileProviderItemIdentifier {
         NSFileProviderItemIdentifier(metadata.ocId)
     }
@@ -37,7 +45,7 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
             capabilities.insert(.allowsReading)
         }
 
-        if metadata.lock == false || (metadata.lock == true && metadata.lockOwnerType == NKLockType.token.rawValue && metadata.ownerId == metadata.lockOwner && metadata.lockToken != nil) {
+        if lockStateAllowsModifications {
             if permissions.contains("D") { // Deletable
                 capabilities.insert(.allowsDeleting)
             }
@@ -63,7 +71,17 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
             }
         }
 
-        capabilities.insert(.allowsExcludingFromSync)
+        // Intentionally NOT vending `.allowsExcludingFromSync`: Finder's "Do not
+        // synchronize" is delivered to the extension as an ordinary `deleteItem` call
+        // (the system force-downloads the item, then deletes it), and the framework gives
+        // no way to distinguish that from a genuine delete — `NSFileProviderDeleteItemOptions`
+        // has only `.recursive`, and `NSFileProviderRequest`'s actor flags are documented
+        // as invalid for the sync-up methods (createItem/modifyItem/deleteItem). As a
+        // result `Item.delete` would issue a real server-side DELETE and the file would
+        // disappear from the server and other devices. Do not re-add without a safe,
+        // provider-driven exclusion path (custom action → requestModificationOfFields →
+        // modifyItem returns `.excludedFromSync` → deleteItem recognizes the excluded item
+        // and skips the remote delete).
 
         return capabilities
     }
@@ -77,15 +95,39 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
         // `metadataVersion` we previously handed the framework, the framework would treat
         // its cached snapshot as still valid, and the new derivations would never reach the
         // system — leaving e.g. the `displayOpenInBrowser` / `displayCopyInternalLink`
-        // userInfo keys missing on items enumerated by older builds. `contentVersion` stays
-        // bare-etag because the file content itself didn't change across the upgrade and
-        // bumping it would force the framework to re-download every materialised file.
+        // userInfo keys missing on items enumerated by older builds. `contentVersion` normally
+        // follows the etag, but lock-only etag transitions preserve the prior value because the
+        // file bytes did not change. Existing rows without that separately stored value fall back
+        // to the etag.
         //
         // See nextcloud/desktop#10065.
         let extensionVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        let metadataVersionString = "\(metadata.etag)|\(extensionVersion)"
+        var metadataVersionString = "\(metadata.etag)|\(extensionVersion)"
 
-        return NSFileProviderItemVersion(contentVersion: metadata.etag.data(using: .utf8)!, metadataVersion: metadataVersionString.data(using: .utf8)!)
+        // Reacquiring an existing lock can restore the local token without changing the etag.
+        // Include the resulting capability state so File Provider re-reads the item as writable.
+        if metadata.lock {
+            metadataVersionString += "|\(lockStateAllowsModifications)"
+        }
+
+        // A directory's `displayEvictDescendants` ("Remove downloaded items")
+        // depends on whether it holds an evictable descendant file — state that
+        // lives outside the folder's own etag. Fold that boolean into
+        // `metadataVersion` so the framework detects its cached snapshot as stale
+        // and re-reads the recomputed `userInfo` when a descendant materializes or
+        // is evicted. Without this, the ancestor-refresh nudge (see
+        // `FileProviderExtension.materializedItemsDidChange`) would hand back an
+        // unchanged version and the framework would drop the update — the same
+        // versioning rationale as the extension-version component above (#10085,
+        // #10065). A bool suffices: it flips exactly at the 0↔≥1 boundary where
+        // the folder action itself flips, so it does not over-invalidate on every
+        // descendant change.
+        if metadata.directory {
+            metadataVersionString += "|\(dbManager.hasEvictableDescendantFile(directoryMetadata: metadata))"
+        }
+
+        let contentVersion = metadata.fileProviderContentVersion ?? metadata.etag
+        return NSFileProviderItemVersion(contentVersion: Data(contentVersion.utf8), metadataVersion: Data(metadataVersionString.utf8))
     }
 
     public var filename: String {
@@ -175,12 +217,21 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
         return formatter.personNameComponents(from: metadata.ownerDisplayName)
     }
 
+    ///
+    /// The number of items directly inside this container, or `nil` when the directory has not been
+    /// enumerated and its contents are therefore unknown.
+    ///
     public var childItemCount: NSNumber? {
-        if metadata.directory {
-            NSNumber(integerLiteral: dbManager.childItemCount(directoryMetadata: metadata))
-        } else {
-            nil
-        }
+        guard metadata.directory else { return nil }
+
+        let known = dbManager.childItemCount(directoryMetadata: metadata)
+
+        // Any children at all means the database has something to say.
+        guard known == 0 else { return NSNumber(integerLiteral: known) }
+
+        // Zero is ambiguous, and `visitedDirectory` separates a directory that has been read
+        // and is empty from one that simply holds no rows yet.
+        return metadata.visitedDirectory ? NSNumber(integerLiteral: 0) : nil
     }
 
     public var fileSystemFlags: NSFileProviderFileSystemFlags {
@@ -192,7 +243,11 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
             ]
         }
 
-        if metadata.lock, metadata.lockOwnerType != NKLockType.user.rawValue || metadata.lockOwner != account.username, metadata.lockTimeOut ?? Date() > Date() {
+        if metadata.lock,
+           !lockStateAllowsModifications,
+           metadata.lockOwnerType != NKLockType.user.rawValue || metadata.lockOwner != account.username,
+           metadata.lockTimeOut ?? Date() > Date()
+        {
             return [
                 .userReadable
             ]
@@ -216,13 +271,37 @@ public final class Item: NSObject, NSFileProviderItem, Sendable {
 
         userInfoDict["displayKeepDownloaded"] = !metadata.keepDownloaded
         userInfoDict["displayAllowAutoEvicting"] = metadata.keepDownloaded
-        // Restricted to non-pinned items so the action only appears once the
-        // framework has refreshed `contentPolicy` to `.inherited`. Both fields
-        // are read from the same `Item` returned by `item(for:)`, so they
-        // always agree — preventing the -2008 NonEvictable race that would
-        // otherwise occur if we tried to evict while `requestModification`'s
-        // unpin signal was still queued (#9891).
-        userInfoDict["displayEvict"] = metadata.downloaded && !metadata.keepDownloaded
+        // "Remove download" is split into two actions that share the same evict
+        // handler but carry different, statically-declared labels (#10085):
+        //
+        // - `displayEvict` → "Remove download", for a *file* whose own payload is
+        //   materialized. Files carry that state in `downloaded`.
+        // - `displayEvictDescendants` → "Remove downloaded items", for a *folder*
+        //   (including the root) that holds at least one *evictable* descendant
+        //   file: downloaded, not pinned via "Always keep downloaded" (an
+        //   individually-pinned descendant is not removable and can't be evicted —
+        //   -2008 NonEvictable, #9891). Folders never get `downloaded == true`
+        //   during sync, and the file label would misdescribe a folder. Sub-folders
+        //   alone do not count; unlike the sticky `visitedDirectory`, this clears
+        //   itself after eviction because it tracks descendants' `downloaded` flags,
+        //   which the materialized-set observer resets.
+        //
+        // Both are restricted to non-pinned items so the action only appears once
+        // the framework has refreshed `contentPolicy` to `.inherited`. This field
+        // and `contentPolicy` are read from the same `Item` returned by
+        // `item(for:)`, so they always agree — preventing the -2008 NonEvictable
+        // race that would otherwise occur if we tried to evict while
+        // `requestModification`'s unpin signal was still queued (#9891). Pinning a
+        // folder recursively sets `keepDownloaded` on the folder itself, so the
+        // same guard keeps the folder action hidden until the two-step unpin flow.
+        let notPinned = !metadata.keepDownloaded
+        if metadata.directory {
+            userInfoDict["displayEvict"] = false
+            userInfoDict["displayEvictDescendants"] = dbManager.hasEvictableDescendantFile(directoryMetadata: metadata) && notPinned
+        } else {
+            userInfoDict["displayEvict"] = metadata.downloaded && notPinned
+            userInfoDict["displayEvictDescendants"] = false
+        }
 
         // Gate the "Open in browser" context menu action on items that have a
         // server-side counterpart whose private link the main app can resolve.

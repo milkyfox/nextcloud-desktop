@@ -52,8 +52,9 @@ bool Utility::writeRandomFile(const QString &fname, int size)
 {
     int maxSize = 10 * 10 * 1024;
 
-    if (size == -1)
+    if (size == -1) {
         size = rand() % maxSize;
+    }
 
     QString randString;
     for (int i = 0; i < size; i++) {
@@ -205,8 +206,9 @@ QString Utility::compactFormatDouble(double value, int prec, const QString &unit
         }
         str.chop(1);
     }
-    if (!unit.isEmpty())
+    if (!unit.isEmpty()) {
         str += (QLatin1Char(' ') + unit);
+    }
     return str;
 }
 
@@ -233,8 +235,9 @@ void Utility::usleep(int usec)
 // This can be overridden from the tests
 OCSYNC_EXPORT bool fsCasePreserving_override = []() -> bool {
     QByteArray env = qgetenv("OWNCLOUD_TEST_CASE_PRESERVING");
-    if (!env.isEmpty())
+    if (!env.isEmpty()) {
         return env.toInt();
+    }
     return Utility::isWindows() || Utility::isMac();
 }();
 
@@ -312,7 +315,7 @@ QString Utility::durationToDescriptiveString2(quint64 msecs)
         return firstPart;
     }
 
-    return QCoreApplication::translate("Utility", "%1 %2").arg(firstPart, periods[p + 1].description(secondPartNum));
+    return QStringLiteral("%1 %2").arg(firstPart, periods[p + 1].description(secondPartNum));
 }
 
 QString Utility::durationToDescriptiveString1(quint64 msecs)
@@ -384,35 +387,6 @@ int Utility::convertSizeToInt(size_t &convertVar)
         convertVar = INT_MAX; // intentionally default to wrong value here to not crash: exception handling TBD
     }
     return static_cast<int>(convertVar);
-}
-
-// read the output of the owncloud --version command from the owncloud
-// version that is on disk. This works for most versions of the client,
-// because clients that do not yet know the --version flag return the
-// version in the first line of the help output :-)
-//
-// This version only delivers output on linux, as Mac and Win get their
-// restarting from the installer.
-QByteArray Utility::versionOfInstalledBinary(const QString &command)
-{
-    QByteArray re;
-    if (isLinux()) {
-        QString binary(command);
-        if (binary.isEmpty()) {
-            binary = qApp->arguments()[0];
-        }
-        QStringList params;
-        params << QStringLiteral("--version");
-        QProcess process;
-        process.start(binary, params);
-        process.waitForFinished(); // sets current thread to sleep and waits for pingProcess end
-        re = process.readAllStandardOutput();
-        int newline = re.indexOf('\n');
-        if (newline > 0) {
-            re.truncate(newline);
-        }
-    }
-    return re;
 }
 
 QString Utility::timeAgoInWords(const QDateTime &dt, const QDateTime &from)
@@ -588,23 +562,27 @@ QByteArray Utility::conflictFileBaseNameFromPattern(const QByteArray &conflictNa
 
     // A single space before "(conflicted copy" is considered part of the tag
     auto startNew = conflictName.lastIndexOf("(conflicted copy");
-    if (startNew > 0 && conflictName[startNew - 1] == ' ')
+    if (startNew > 0 && conflictName[startNew - 1] == ' ') {
         startNew -= 1;
+    }
 
     // The rightmost tag is relevant
     auto tagStart = qMax(startOld, startNew);
-    if (tagStart == -1)
+    if (tagStart == -1) {
         return "";
+    }
 
     // Find the end of the tag
     auto tagEnd = conflictName.size();
     auto dot = conflictName.lastIndexOf('.'); // dot could be part of user name for new tag!
-    if (dot > tagStart)
+    if (dot > tagStart) {
         tagEnd = dot;
+    }
     if (tagStart == startNew) {
         auto paren = conflictName.indexOf(')', tagStart);
-        if (paren != -1)
+        if (paren != -1) {
             tagEnd = paren + 1;
+        }
     }
     return conflictName.left(tagStart) + conflictName.mid(tagEnd);
 }
@@ -710,5 +688,42 @@ QString Utility::fullRemotePathToRemoteSyncRootRelative(const QString &fullRemot
     return noLeadingSlashPath(noTrailingSlashPath(relativePathToRemoteSyncRoot));
 }
 
+QStringList Utility::expandCommandLineOptionValues(const QStringList &arguments)
+{
+    QStringList expandedArguments;
+    expandedArguments.reserve(arguments.size());
+
+    for (const auto &argument : arguments) {
+        // Anything that is not a long option is passed through untouched: paths and custom
+        // URI scheme arguments may legitimately contain a '='.
+        const auto separator = argument.startsWith(QLatin1String("--")) ? argument.indexOf(QLatin1Char('=')) : -1;
+        if (separator < 3) {
+            expandedArguments.append(argument);
+            continue;
+        }
+
+        expandedArguments.append(argument.left(separator));
+
+        if (const auto value = argument.mid(separator + 1); !value.isEmpty()) {
+            expandedArguments.append(value);
+        }
+    }
+
+    return expandedArguments;
+}
+
+#ifdef Q_OS_LINUX
+QString Utility::appImageLocation()
+{
+    Q_ASSERT(Utility::runningInAppImage());
+    static const auto value = qEnvironmentVariable("APPIMAGE");
+    return value;
+}
+
+bool Utility::runningInAppImage()
+{
+    return qEnvironmentVariableIsSet("APPIMAGE");
+}
+#endif
 
 } // namespace OCC

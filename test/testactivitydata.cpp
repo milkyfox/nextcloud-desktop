@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "gui/tray/activitydata.h"
+#include "gui/activity/activitydata.h"
 #include "account.h"
 #include "accountstate.h"
 #include "syncenginetestutils.h"
@@ -191,7 +191,7 @@ public:
     QScopedPointer<FakeQNAM> fakeQnam;
     OCC::AccountPtr account;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
         OCC::Logger::instance()->setLogFlush(true);

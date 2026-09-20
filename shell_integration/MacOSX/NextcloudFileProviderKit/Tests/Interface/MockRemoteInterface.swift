@@ -568,6 +568,21 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
     public var rootTrashItem: MockRemoteItem?
     public var currentChunks: [String: [RemoteFileChunk]] = [:]
     public var completedChunkTransferSize: [String: Int64] = [:]
+
+    /// Limits completion callbacks to simulate an interrupted chunk upload.
+    public var chunkUploadCompletedChunkCount: Int?
+
+    /// Overrides the directory where chunked uploads create their local chunk files.
+    public var chunkUploadDirectory: URL?
+
+    /// Maps chunk upload identifiers to the directories used for their local chunk files.
+    public var chunkUploadDirectories: [String: URL] = [:]
+
+    /// When `false`, chunked uploads return no directory so cleanup uses `removeLocalChunks`.
+    public var returnsChunkUploadDirectory = true
+
+    /// When set, local chunk removal fails with this error.
+    public var removeLocalChunksError: (any Error)?
     public var pagination: Bool
     public var expectedEnumerationPaginationTokens: [String: String] = [:]
     public var forceNextPageOnLastContentPage: Bool = false
@@ -587,8 +602,41 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
     /// exercising the locally-known-mtime fallback in the production code.
     public var uploadReturnsNilDate: Bool = false
 
+    /// When set, every upload call returns this error immediately without touching the mock tree.
+    /// Use this to simulate server-side upload rejections (e.g. 404 path gone, 507 quota).
+    public var uploadError: NKError?
+
+    /// When set, every delete call returns this error immediately without touching the mock tree.
+    /// Use this to simulate an already-missing remote item.
+    public var deleteError: NKError?
+
+    /// The remote path supplied to the most recent delete call.
+    public private(set) var lastDeleteRemotePath: String?
+
+    /// When set, trash listings return this error without reading the mock trash tree.
+    public var trashListingError: NKError?
+
+    /// Records the `If-Match` header the most recent upload call carried (nil if none).
+    /// Lets tests assert the optimistic-concurrency precondition was sent, and with
+    /// which etag. Captured before any injected `uploadError` short-circuit.
+    public var lastUploadIfMatchHeader: String?
+
+    /// Records the WebDAV `If` header the most recent upload call carried (nil if none).
+    public var lastUploadIfHeader: String?
+
+    /// Lock information returned by lock and unlock requests.
+    public var lockUnlockResult: NKLock?
+
+    /// When set, every lock or unlock call throws this error without changing the mock item.
+    public var lockUnlockError: NKError?
+
     /// Handler to track enumerate calls
     public var enumerateCallHandler: ((String, EnumerateDepth, Bool, [String], Data?, Account, NKRequestOptions, @escaping (URLSessionTask) -> Void) -> Void)?
+
+    /// Test hook: force `enumerate` to fail for remote paths ending with a given suffix, returning the
+    /// associated error instead of reading the mock tree. Lets tests reproduce a working-set scan in
+    /// which one folder's PROPFIND fails (e.g. a large container timing out) while the rest succeed.
+    public var enumerateErrorBySuffix: [String: NKError] = [:]
 
     public init(
         account: Account,
@@ -655,7 +703,9 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         }
 
         var pathComponents = sanitisedPath?.components(separatedBy: "/")
-        if pathComponents?.first?.isEmpty == true { pathComponents?.removeFirst() }
+        if pathComponents?.first?.isEmpty == true {
+            pathComponents?.removeFirst()
+        }
         var currentNode = remotePath.hasPrefix(account.trashUrl) ? rootTrashItem : rootItem
 
         while pathComponents?.isEmpty == false {
@@ -678,7 +728,9 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
     func parentPath(path: String, account: Account) -> String {
         let sanitisedPath = sanitisedPath(path, account: account)
         var pathComponents = sanitisedPath?.components(separatedBy: "/")
-        if pathComponents?.first?.isEmpty == true { pathComponents?.removeFirst() }
+        if pathComponents?.first?.isEmpty == true {
+            pathComponents?.removeFirst()
+        }
         guard pathComponents?.isEmpty == false else { return "/" }
         pathComponents?.removeLast()
         let rootPath = path.hasPrefix(account.trashUrl) ? account.trashUrl : account.davFilesUrl
@@ -747,7 +799,7 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         creationDate: Date? = .init(),
         modificationDate: Date? = .init(),
         account: Account,
-        options _: NKRequestOptions = .init(),
+        options: NKRequestOptions = .init(),
         requestHandler _: @escaping (Alamofire.UploadRequest) -> Void = { _ in },
         taskHandler _: @escaping (URLSessionTask) -> Void = { _ in },
         progressHandler _: @escaping (Progress) -> Void = { _ in }
@@ -760,6 +812,13 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         response: HTTPURLResponse?,
         remoteError: NKError
     ) {
+        lastUploadIfMatchHeader = options.customHeader?["If-Match"]
+        lastUploadIfHeader = options.customHeader?["If"]
+
+        if let uploadError {
+            return (account.ncKitAccount, nil, nil, nil, 0, nil, uploadError)
+        }
+
         var itemName: String
         do {
             itemName = try name(from: remotePath)
@@ -851,20 +910,24 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
     ) async -> (
         account: String,
         file: NKFile?,
+        chunksDirectory: URL?,
         nkError: NKError
     ) {
         guard let remoteUrl = URL(string: remotePath) else {
             print("Invalid remote path!")
-            return ("", nil, .urlError)
+            return ("", nil, nil, .urlError)
         }
 
-        // Create temp directory for file and create chunks within it
+        // Create the local chunk directory used by the production adapter and populate it below.
         let fm = FileManager.default
-        let tempDirectoryUrl = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let tempDirectoryUrl = chunkUploadDirectory ?? fm.temporaryDirectory
+            .appendingPathComponent(remoteChunkStoreFolderName, isDirectory: true)
+        chunkUploadDirectories[remoteChunkStoreFolderName] = tempDirectoryUrl
         try! fm.createDirectory(atPath: tempDirectoryUrl.path, withIntermediateDirectories: true)
 
         // Access local file and gather metadata
-        let fileSize = try! fm.attributesOfItem(atPath: localPath)[.size] as! Int
+        let localFileData = try! Data(contentsOf: URL(fileURLWithPath: localPath))
+        let fileSize = localFileData.count
 
         var remainingFileSize = fileSize
         let numChunks = Int(ceil(Double(fileSize) / Double(chunkSize)))
@@ -881,6 +944,18 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         let preexistingChunks = currentChunks[remoteChunkStoreFolderName] ?? []
         let totalChunks = preexistingChunks + newChunks
         currentChunks[remoteChunkStoreFolderName] = totalChunks
+
+        for chunk in newChunks {
+            guard let chunkNumber = Int(chunk.fileName), chunkNumber > 0 else { continue }
+
+            let startIndex = (chunkNumber - 1) * chunkSize
+            let endIndex = min(startIndex + Int(chunk.size), localFileData.count)
+            guard startIndex < endIndex else { continue }
+
+            let chunkData = localFileData.subdata(in: startIndex ..< endIndex)
+            try! chunkData.write(to: tempDirectoryUrl.appendingPathComponent(chunk.fileName))
+        }
+
         chunkUploadStartHandler(newChunks)
 
         let (_, ocId, etag, date, size, _, remoteError) = await upload(
@@ -894,7 +969,10 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
             taskHandler: taskHandler,
             progressHandler: progressHandler
         )
-        newChunks.forEach { chunkUploadCompleteHandler($0) }
+        let completedChunks = chunkUploadCompletedChunkCount.map {
+            newChunks.prefix($0)
+        } ?? newChunks[...]
+        completedChunks.forEach { chunkUploadCompleteHandler($0) }
         print(remainingChunks)
         completedChunkTransferSize[remoteChunkStoreFolderName] =
             remainingChunks.reduce(0) { $0 + $1.size }
@@ -913,7 +991,31 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         file.creationDate = creationDate ?? Date()
         file.date = date as? Date ?? Date()
 
-        return (account.ncKitAccount, file, remoteError)
+        return (
+            account.ncKitAccount,
+            file,
+            returnsChunkUploadDirectory ? tempDirectoryUrl : nil,
+            remoteError
+        )
+    }
+
+    public func removeLocalChunks(remoteChunkStoreFolderName: String) throws {
+        if let removeLocalChunksError {
+            throw removeLocalChunksError
+        }
+
+        let chunksDirectory = chunkUploadDirectories.removeValue(
+            forKey: remoteChunkStoreFolderName
+        ) ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+            remoteChunkStoreFolderName,
+            isDirectory: true
+        )
+
+        do {
+            try FileManager.default.removeItem(at: chunksDirectory)
+        } catch CocoaError.fileNoSuchFile {
+            // Nothing remains to clean up.
+        }
     }
 
     public func move(
@@ -1096,6 +1198,11 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         // Call the enumerate call handler if it exists
         enumerateCallHandler?(remotePath, depth, showHiddenFiles, includeHiddenFiles, requestBody, account, options, taskHandler)
 
+        // Test hook: inject a read failure for a targeted path (see `enumerateErrorBySuffix`).
+        if let injected = enumerateErrorBySuffix.first(where: { remotePath.hasSuffix($0.key) })?.value {
+            return (account.ncKitAccount, [], nil, injected)
+        }
+
         guard let item = item(remotePath: remotePath, account: account.ncKitAccount) else {
             print("Item at \(remotePath) not found.")
             return (
@@ -1189,6 +1296,12 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         options _: NKRequestOptions = .init(),
         taskHandler _: @escaping (URLSessionTask) -> Void = { _ in }
     ) async -> (account: String, response: HTTPURLResponse?, error: NKError) {
+        lastDeleteRemotePath = remotePath
+
+        if let deleteError {
+            return (account.ncKitAccount, nil, deleteError)
+        }
+
         guard let item = item(remotePath: remotePath, account: account.ncKitAccount) else {
             return (account.ncKitAccount, nil, .urlError)
         }
@@ -1212,9 +1325,16 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
             throw NKError.urlError
         }
 
-        item.locked = shouldLock
+        if let lockUnlockError {
+            throw lockUnlockError
+        }
 
-        return nil
+        item.locked = shouldLock
+        if shouldLock, let etag = lockUnlockResult?.etag {
+            item.versionIdentifier = etag
+        }
+
+        return lockUnlockResult
     }
 
     public func listingTrashAsync(
@@ -1229,6 +1349,10 @@ public class MockRemoteInterface: RemoteInterface, @unchecked Sendable {
         responseData: AFDataResponse<Data>?,
         error: NKError
     ) {
+        if let trashListingError {
+            return (account, nil, nil, trashListingError)
+        }
+
         guard let rootTrashItem else {
             return (account, [], nil, .invalidData)
         }

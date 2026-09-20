@@ -5,9 +5,10 @@
 
 import QtQuick
 import QtQuick.Controls
-import Style
 
 Menu {
+    popupType: Popup.Window
+
     width: {
         var result = 0;
         var padding = 0;

@@ -1,0 +1,27 @@
+/*
+ * SPDX-FileCopyrightText: 2021 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+import QtQml
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Style
+import com.nextcloud.desktopclient
+import "qrc:/qml/src/gui/tray"
+
+EnforcedPlainTextLabel {
+    required property string section
+
+    topPadding: Style.unifiedSearchResultSectionItemVerticalPadding
+    bottomPadding: Style.unifiedSearchResultSectionItemVerticalPadding
+    leftPadding: Style.unifiedSearchResultSectionItemLeftPadding
+
+    text: section
+    font.pixelSize: Style.unifiedSearchResultTitleFontSize
+
+    Accessible.role: Accessible.Separator
+    //: %1 is the search results section heading, for example "Partial matches".
+    Accessible.name: qsTr("Search results section %1").arg(section)
+}

@@ -39,6 +39,7 @@ public protocol ItemMetadata: Equatable {
     var downloadURL: String { get set }
     var e2eEncrypted: Bool { get set }
     var etag: String { get set }
+    var fileProviderContentVersion: String? { get set }
     var favorite: Bool { get set }
     var fileId: String { get set }
     var fileName: String { get set } // What the file's real file name is
@@ -99,6 +100,26 @@ public protocol ItemMetadata: Equatable {
 }
 
 public extension ItemMetadata {
+    /// Whether two metadata values identify the same account and remote path,
+    /// ignoring Unicode canonical-equivalence differences.
+    func hasSameLocation(as comparingMetadata: any ItemMetadata) -> Bool {
+        account == comparingMetadata.account
+            && serverUrl.precomposedStringWithCanonicalMapping == comparingMetadata.serverUrl.precomposedStringWithCanonicalMapping
+            && fileName.precomposedStringWithCanonicalMapping == comparingMetadata.fileName.precomposedStringWithCanonicalMapping
+    }
+
+    /// Whether this item has the given remote path, ignoring Unicode canonical-equivalence differences.
+    func hasSameRemotePath(as path: String) -> Bool {
+        remotePath().precomposedStringWithCanonicalMapping == path.precomposedStringWithCanonicalMapping
+    }
+
+    /// Whether this item is below the given remote directory path, ignoring Unicode canonical-equivalence differences.
+    func isDescendant(of path: String) -> Bool {
+        remotePath().precomposedStringWithCanonicalMapping.hasPrefix(
+            path.precomposedStringWithCanonicalMapping + "/"
+        )
+    }
+
     var livePhoto: Bool {
         livePhotoFile != nil && livePhotoFile?.isEmpty == false
     }
@@ -146,6 +167,7 @@ public extension ItemMetadata {
             && comparingMetadata.sharePermissionsCollaborationServices
             == sharePermissionsCollaborationServices
             && comparingMetadata.favorite == favorite
+            && comparingMetadata.size == size
     }
 
     /// Returns false if the user is lokced out of the file. I.e. The file is locked but by someone else

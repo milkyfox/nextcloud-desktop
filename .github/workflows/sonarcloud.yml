@@ -2,10 +2,24 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 name: SonarCloud analysis
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**/CMakeLists.txt"
+      - "**/*.cpp"
+      - "**/*.c"
+      - "**/*.h"
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && !github.event.pull_request.draft && !startsWith(github.event.pull_request.head.ref, 'backport/')) }}
     name: SonarCloud analysis
     runs-on: [ubuntu-latest, self-hosted]
     container: ghcr.io/nextcloud/continuous-integration-client-qt6:client-sid-6.10.2-2
@@ -13,15 +27,9 @@ jobs:
       SONAR_SERVER_URL: "https://sonarcloud.io"
       BUILD_WRAPPER_OUT_DIR: build_wrapper_output_directory # Directory where build-wrapper output will be placed
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
-
-      - name: Restore cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: /cache
-          key: ${{ runner.os }}
 
       - name: Run build-wrapper
         run: |

@@ -79,7 +79,7 @@ extension Item {
 
         logger.info("Item to create is a lock file. Will attempt to lock the associated file on the server.", [.name: itemTemplate.filename])
 
-        guard let targetFileName = originalFileName(fromLockFileName: itemTemplate.filename, dbManager: dbManager) else {
+        guard let targetFileName = lockFileTargetName(forLockFileName: itemTemplate.filename, parentServerUrl: parentItemRemotePath, dbManager: dbManager) else {
             logger.error("Will not lock the target file because it could not be determined based on the lock file name.", [.name: itemTemplate.filename])
             return (nil, NSFileProviderError(.excludedFromSync))
         }
@@ -143,7 +143,21 @@ extension Item {
                         targetMetadata.lockOwnerType = lock.ownerType.rawValue
                         targetMetadata.lockTime = lock.time
                         targetMetadata.lockTimeOut = lock.timeOut
+                        if let etag = lock.etag {
+                            // LOCK changes server metadata, not file bytes. Keep the content version
+                            // File Provider already knows while adopting the lock response's etag.
+                            if targetMetadata.fileProviderContentVersion == nil {
+                                targetMetadata.fileProviderContentVersion = targetMetadata.etag
+                            }
+                            targetMetadata.etag = etag
+                        }
                         targetMetadata.lockToken = lock.token
+                        // Ensure token-dependent capabilities are published even if the etag is unchanged.
+                        targetMetadata.syncTime = Date()
+                    }
+
+                    if let domain {
+                        FileProviderChangeNotificationInterface(domain: domain, log: log).notifyChange()
                     }
                 } else {
                     logger.error("Failed to find target item for acquired lock.", [.lock: lock])
@@ -238,14 +252,25 @@ extension Item {
     }
 
     func deleteLockFile(domain: NSFileProviderDomain? = nil, dbManager: FilesDatabaseManager) async -> Error? {
+        // Always drop the local lock metadata first so it is never orphaned, even when the
+        // server lacks the locking capability or the guarded document cannot be determined.
+        dbManager.deleteItemMetadata(ocId: metadata.ocId)
+
         guard await Self.assertRequiredCapabilities(domain: domain, itemIdentifier: itemIdentifier, account: account, remoteInterface: remoteInterface, logger: logger) else {
+            logger.info("Server does not support locking; removed local lock metadata without contacting the server.", [.name: metadata.fileName])
             return nil
         }
 
-        dbManager.deleteItemMetadata(ocId: metadata.ocId)
-
-        guard let originalFileName = originalFileName(fromLockFileName: metadata.fileName, dbManager: dbManager) else {
+        guard let originalFileName = lockFileTargetName(forLockFileName: metadata.fileName, parentServerUrl: metadata.serverUrl, dbManager: dbManager) else {
             logger.error("Could not get original filename from lock file filename so will not unlock target file.", [.name: metadata.fileName])
+            return nil
+        }
+
+        // (Newer versions of) AutoCAD creates .dwl and .dwl2 as a pair. Only unlock when both are gone.
+        if isAutoCADLockFileName(metadata.fileName),
+           autoCADSiblingLockFileExists(lockFilename: metadata.fileName, parentServerUrl: metadata.serverUrl, dbManager: dbManager)
+        {
+            logger.info("AutoCAD sibling lock file still present; keeping document locked.", [.name: originalFileName])
             return nil
         }
 
@@ -274,10 +299,24 @@ extension Item {
             } else {
                 logger.info("Unlocked file but did not receive lock information.", [.name: originalFileName])
             }
+        } catch let error as NKError where error.isPreconditionFailedError {
+            // files_lock returns 412 when UNLOCK finds no server-side lock. The requested state is
+            // therefore already reached, so finish the local cleanup instead of reporting a sync error.
+            logger.info("Server reported that the file is already unlocked.", [.name: originalFileName])
+        } catch {
+            logger.error("Could not unlock item.", [.name: filename, .error: error])
 
-            logger.info("Removing lock from locally stored target item.", [.name: originalFileName])
+            if let error = error as? NKError {
+                return error.fileProviderError(handlingNoSuchItemErrorUsingItemIdentifier: itemIdentifier)
+            }
 
-            if let targetMetadata = dbManager.itemMetadatas.where({ $0.fileName.equals(originalFileName) }).where({ $0.serverUrl.equals(metadata.serverUrl) }).first {
+            return nil
+        }
+
+        logger.info("Removing lock from locally stored target item.", [.name: originalFileName])
+
+        if let targetMetadata = dbManager.itemMetadatas.where({ $0.fileName.equals(originalFileName) }).where({ $0.serverUrl.equals(metadata.serverUrl) }).first {
+            do {
                 try dbManager.ncDatabase().write {
                     targetMetadata.lock = false
                     targetMetadata.lockOwner = nil
@@ -288,15 +327,11 @@ extension Item {
                     targetMetadata.lockTimeOut = nil
                     targetMetadata.lockToken = nil
                 }
-            } else {
-                logger.error("Failed to find target item for released lock.", [.lock: lock])
+            } catch {
+                logger.error("Could not remove lock from locally stored target item.", [.name: originalFileName, .error: error])
             }
-        } catch {
-            logger.error("Could not unlock item.", [.name: filename, .error: error])
-
-            if let error = error as? NKError {
-                return error.fileProviderError(handlingNoSuchItemErrorUsingItemIdentifier: itemIdentifier)
-            }
+        } else {
+            logger.error("Failed to find target item for released lock.", [.name: originalFileName])
         }
 
         return nil

@@ -9,7 +9,6 @@
 
 #include "editlocallymanager.h"
 #include "networkjobs.h"
-#include "systray.h"
 
 using namespace Qt::StringLiterals;
 
@@ -43,9 +42,6 @@ void FileProviderEditLocallyJob::start()
         return;
     }
 
-    const auto filename = relPathSplit.last();
-    Systray::instance()->createEditFileLocallyLoadingDialog(filename);
-
     qCDebug(lcFileProviderEditLocallyJob) << "Getting file ocId for" << _relPath;
 
     const auto idJob = new PropfindJob(_accountState->account(), _relPath, this);
@@ -62,7 +58,6 @@ void FileProviderEditLocallyJob::start()
 void FileProviderEditLocallyJob::showError(const QString &message, 
                                            const QString &informativeText)
 {
-    Systray::instance()->destroyEditFileLocallyLoadingDialog();  
     EditLocallyManager::showError(message, informativeText);
     Q_EMIT error(message, informativeText);
 }
@@ -84,7 +79,7 @@ void FileProviderEditLocallyJob::idGetFinished(const QVariantMap &data)
     }
 
     qCDebug(lcFileProviderEditLocallyJob) << "Got file ocId for" << _relPath << ocId;
-    emit ocIdAcquired(ocId);
+    Q_EMIT ocIdAcquired(ocId);
 }
 
 } // namespace OCC::Mac

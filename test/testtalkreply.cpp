@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "tray/talkreply.h"
+#include "activity/talkreply.h"
 
 #include "account.h"
 #include "accountstate.h"
@@ -38,7 +38,7 @@ public:
     QScopedPointer<FakeQNAM> fakeQnam;
     QScopedPointer<OCC::AccountState> accountState;
 
-private slots:
+private Q_SLOTS:
     void initTestCase()
     {
         OCC::Logger::instance()->setLogFlush(true);

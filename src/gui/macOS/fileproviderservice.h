@@ -51,7 +51,7 @@ public:
      */
     void setLatestReceivedSyncStatus(const QString &userId, SyncResult::Status status);
 
-signals:
+Q_SIGNALS:
     /**
      * @brief Emitted when a file provider extension reports its sync status.
      * @param account The account for which the sync state changed.
@@ -67,6 +67,15 @@ signals:
      * @param fileProviderDomainIdentifier The file provider domain identifier (optional, empty if not provided).
      */
     void showFileActionsDialog(const QString &fileId, const QString &localFile, const QString &remoteItemPath, const QString &fileProviderDomainIdentifier);
+
+    /**
+     * @brief Emitted when a file provider extension requests the unified sharing dialog.
+     * @param fileId The numeric server file id, equal to the WebDAV `fileid` property.
+     * @param localFile The local file path to share.
+     * @param remoteItemPath The server-side path of the item.
+     * @param fileProviderDomainIdentifier The file provider domain identifier for the account that owns the item.
+     */
+    void showUnifiedSharingDialog(const QString &fileId, const QString &localFile, const QString &remoteItemPath, const QString &fileProviderDomainIdentifier);
 
     /**
      * @brief Emitted when a file provider extension requests to open an item's page in the user's web browser.

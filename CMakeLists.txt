@@ -2,7 +2,6 @@
 # SPDX-FileCopyrightText: 2011 ownCloud GmbH
 # SPDX-License-Identifier: GPL-2.0-or-later
 cmake_minimum_required(VERSION 3.16)
-cmake_policy(SET CMP0071 NEW) # Enable use of QtQuick compiler/generated code
 
 project(client)
 
@@ -11,7 +10,7 @@ if(APPLE)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FeatureSummary)
 
@@ -31,7 +30,7 @@ set(BIN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 include(${CMAKE_SOURCE_DIR}/NEXTCLOUD.cmake)
 
 set(QT_VERSION_MAJOR "6")
-set(REQUIRED_QT_VERSION "6.8.0")
+set(REQUIRED_QT_VERSION "6.10.0")
 
 # CfAPI Shell Extensions
 set( CFAPI_SHELL_EXTENSIONS_LIB_NAME CfApiShellExtensions )
@@ -56,10 +55,8 @@ if(NOT DEFINED APPLICATION_VIRTUALFILE_SUFFIX)
 endif()
 
 # need this logic to not mess with re/uninstallations via macosx.pkgproj
-if(${APPLICATION_REV_DOMAIN} STREQUAL "com.owncloud.desktopclient")
-    set(APPLICATION_REV_DOMAIN_INSTALLER "com.ownCloud.client")
-else()
-    set(APPLICATION_REV_DOMAIN_INSTALLER ${APPLICATION_REV_DOMAIN})
+if(NOT DEFINED APPLICATION_REV_DOMAIN_INSTALLER)
+    set(APPLICATION_REV_DOMAIN_INSTALLER "${APPLICATION_REV_DOMAIN}")
 endif()
 
 option( APPLICATION_DISPLAY_LEGACY_IMPORT_DIALOG "Display legacy import dialog" ON )
@@ -93,6 +90,10 @@ include(KDEInstallDirs)
 include(KDECMakeSettings)
 include(ECMMarkNonGuiExecutable)
 include(ECMSetupVersion)
+include(ECMQmlModule)
+
+include(KDEGitCommitHooks)
+kde_configure_git_pre_commit_hook(CHECKS CLANG_FORMAT)
 
 #include(KDECompilerSettings NO_POLICY_SCOPE)
 include(ECMEnableSanitizers)
@@ -271,41 +272,8 @@ if(BUILD_CLIENT)
     endif()
 endif()
 
-option(BUILD_WITH_WEBENGINE "BUILD_WITH_WEBENGINE" ON)
-if (BUILD_WITH_WEBENGINE)
-    find_package(Qt${QT_VERSION_MAJOR}WebEngineCore ${REQUIRED_QT_VERSION} CONFIG QUIET)
-    if(APPLE)
-        set_package_properties(Qt${QT_VERSION_MAJOR}WebEngineCore PROPERTIES
-            DESCRIPTION "Qt${QT_VERSION_MAJOR} WebEngineCore component."
-            TYPE RECOMMENDED
-        )
-    else()
-        set_package_properties(Qt${QT_VERSION_MAJOR}WebEngineCore PROPERTIES
-            DESCRIPTION "Qt${QT_VERSION_MAJOR} WebEngine component."
-            TYPE REQUIRED
-        )
-    endif()
-
-    find_package(Qt${QT_MAJOR_VERSION}WebEngineWidgets ${REQUIRED_QT_VERSION} CONFIG QUIET)
-    if(APPLE)
-        set_package_properties(Qt${QT_MAJOR_VERSION}WebEngineWidgets PROPERTIES
-            DESCRIPTION "Qt${QT_MAJOR_VERSION} WebEngineWidgets component."
-            TYPE RECOMMENDED
-        )
-    else()
-        set_package_properties(Qt${QT_MAJOR_VERSION}WebEngineWidgets PROPERTIES
-            DESCRIPTION "Qt${QT_MAJOR_VERSION} WebEngineWidgets component."
-            TYPE REQUIRED
-        )
-    endif()
-
-    if(Qt${QT_MAJOR_VERSION}WebEngineCore_FOUND AND Qt${QT_MAJOR_VERSION}WebEngineWidgets_FOUND)
-        message(STATUS "Enable use of Qt6 WebEngine module")
-        set(WITH_WEBENGINE 1)
-    else()
-        unset(WITH_WEBENGINE)
-        message(STATUS "Disable use of Qt6 WebEngine module")
-    endif()
+if (LINUX)
+    find_package(KF6DBusAddons)
 endif()
 
 if (NOT DEFINED APPLICATION_ICON_NAME)
@@ -319,9 +287,12 @@ add_definitions(-D_UNICODE)
 if( WIN32 )
 add_definitions( -D__USE_MINGW_ANSI_STDIO=1 )
 add_definitions( -DNOMINMAX )
-# Get APIs from from Vista onwards.
-add_definitions(-D_WIN32_WINNT=0x0601)
-add_definitions(-DWINVER=0x0601)
+# Target Windows 10 or later, matching the documented supported runtime
+# (see README). NTDDI_VERSION is already on Windows 10 2004 (19041), so
+# the previous Windows 7 values for WINVER / _WIN32_WINNT were merely
+# stale — bringing them in line unlocks Win8+ APIs like XAudio2.
+add_definitions(-D_WIN32_WINNT=0x0A00)
+add_definitions(-DWINVER=0x0A00)
 add_definitions(-DNTDDI_VERSION=0x0A000004)
     if( MSVC )
     # Use automatic overload for suitable CRT safe-functions
@@ -330,8 +301,8 @@ add_definitions(-DNTDDI_VERSION=0x0A000004)
     # Also: Disable compiler warnings because we don't use Windows CRT safe-functions explicitly and don't intend to
     # as this is a pure cross-platform source the only alternative would be a ton of ifdefs with calls to the _s version
     add_definitions( -D_CRT_SECURE_NO_WARNINGS )
-    endif( MSVC )
-endif( WIN32 )
+    endif()
+endif()
 
 if (APPLE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
@@ -346,18 +317,20 @@ if(BUILD_CLIENT)
     if(NOT BUILD_LIBRARIES_ONLY)
         if(IS_DIRECTORY ${CMAKE_SOURCE_DIR}/admin)
             add_subdirectory(admin)
-        endif(IS_DIRECTORY ${CMAKE_SOURCE_DIR}/admin)
-    endif(NOT BUILD_LIBRARIES_ONLY)
+        endif()
+    endif()
 endif()
 
 if(BUILD_SHELL_INTEGRATION)
     add_subdirectory(shell_integration)
 endif()
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND BUILD_GUI)
     include(CTest)
     enable_testing()
     add_subdirectory(test)
+elseif(BUILD_TESTING)
+    message(STATUS "Skipping tests: BUILD_TESTING requires BUILD_GUI to be enabled.")
 endif()
 
 configure_file(config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)

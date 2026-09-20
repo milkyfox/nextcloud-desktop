@@ -4,7 +4,7 @@ name: Linux GCC compilation and tests
 on:
   workflow_dispatch:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened, synchronize, ready_for_review, closed]
   push:
     branches: [delta-sync]
 concurrency:
@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    if: ${{ github.event.action != 'closed' && !github.event.pull_request.draft }}
     name: Linux GCC compilation and tests
     runs-on: ubuntu-latest
     container: ghcr.io/nextcloud/continuous-integration-client-qt6:client-sid-6.10.2-4

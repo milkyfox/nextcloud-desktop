@@ -15,6 +15,7 @@
 #include "common/utility.h"
 #include "filesystem.h"
 #include "propagatorjobs.h"
+#include "lockfilejobs.h"
 #include "common/checksums.h"
 #include "syncengine.h"
 #include "deletejob.h"
@@ -91,7 +92,7 @@ bool PUTFileJob::finished()
                      << reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute)
                      << reply()->attribute(QNetworkRequest::HttpReasonPhraseAttribute);
 
-    emit finishedSignal();
+    Q_EMIT finishedSignal();
     return true;
 }
 
@@ -127,7 +128,7 @@ bool PollJob::finished()
                 _journal->setPollInfo(info);
                 _journal->commit("remove poll info");
             }
-            emit finishedSignal();
+            Q_EMIT finishedSignal();
             return true;
         }
         QTimer::singleShot(8 * 1000, this, &PollJob::start);
@@ -141,7 +142,7 @@ bool PollJob::finished()
     if (jsonParseError.error != QJsonParseError::NoError) {
         _item->_errorString = tr("Invalid JSON reply from the poll URL");
         _item->_status = SyncFileItem::NormalError;
-        emit finishedSignal();
+        Q_EMIT finishedSignal();
         return true;
     }
 
@@ -176,7 +177,7 @@ bool PollJob::finished()
     _journal->setPollInfo(info);
     _journal->commit("remove poll info");
 
-    emit finishedSignal();
+    Q_EMIT finishedSignal();
     return true;
 }
 
@@ -212,8 +213,8 @@ void PropagateUploadFileCommon::start()
             done(SyncFileItem::NormalError, renameError);
             return;
         }
-        emit propagator()->touchedFile(existingFile);
-        emit propagator()->touchedFile(targetFile);
+        Q_EMIT propagator()->touchedFile(existingFile);
+        Q_EMIT propagator()->touchedFile(targetFile);
     }
 
     const auto path = _item->_file;
@@ -287,7 +288,7 @@ void PropagateUploadFileCommon::startUploadFile() {
     if (_fileToUpload._size > quotaGuess) {
         // Necessary for blacklisting logic
         _item->_httpErrorCode = 507;
-        emit propagator()->insufficientRemoteStorage();
+        Q_EMIT propagator()->insufficientRemoteStorage();
         done(SyncFileItem::DetailError, tr("Upload of %1 exceeds the quota for the folder").arg(Utility::octetsToString(_fileToUpload._size)));
         return;
     }
@@ -434,13 +435,29 @@ void PropagateUploadFileCommon::slotStartUpload(const QByteArray &transmissionCh
         return slotOnErrorStartFolderUnlock(SyncFileItem::SoftError, tr("Local file changed during syncing. It will be resumed."));
     }
 
+    // for new uploads also ensure the file sizes stays the same, relying on the mtime alone is not always reliable
+    const auto prevFileToUploadSize = _fileToUpload._size;
+    const auto prevItemSize = _item->_size;
     _fileToUpload._size = FileSystem::getSize(fullFilePath);
     _item->_size = FileSystem::getSize(originalFilePath);
+
+    const auto fileSizesChangedForNewItem = _item->_instruction == CSYNC_INSTRUCTION_NEW
+        && !(prevItemSize == 0 && prevFileToUploadSize == 0) // file conflict items created during propagation may not have a file size, ignore those
+        && !(prevFileToUploadSize == _fileToUpload._size && prevItemSize == _item->_size);
+    if (fileSizesChangedForNewItem) {
+        qCWarning(lcPropagateUpload).nospace() << "File sizes changed between discovery and propagation phase"
+            << " fileToUpload.path=" << _fileToUpload._path
+            << " fileToUpload.size=" << _fileToUpload._size
+            << " prevFileToUploadSize=" << prevFileToUploadSize
+            << " item.file=" << _item->_file
+            << " item.size=" << _item->_size
+            << " prevItemSize=" << prevItemSize;
+    }
 
     // But skip the file if the mtime is too close to 'now'!
     // That usually indicates a file that is still being changed
     // or not yet fully copied to the destination.
-    if (fileIsStillChanging(*_item)) {
+    if (fileIsStillChanging(*_item) || fileSizesChangedForNewItem) {
         propagator()->_anotherSyncNeeded = true;
         return slotOnErrorStartFolderUnlock(SyncFileItem::SoftError, tr("Local file changed during sync."));
     }
@@ -490,8 +507,9 @@ UploadDevice::~UploadDevice()
 
 bool UploadDevice::open(QIODevice::OpenMode mode)
 {
-    if (mode & QIODevice::WriteOnly)
+    if (mode & QIODevice::WriteOnly) {
         return false;
+    }
 
     // Get the file size now: _file.fileName() is no longer reliable
     // on all platforms after openAndSeekFileSharedRead().
@@ -689,13 +707,26 @@ void PropagateUploadFileCommon::commonErrorHandling(AbstractNetworkJob *job)
     QString errorString = job->errorStringParsingBody(&replyContent);
     qCWarning(lcPropagateUpload) << replyContent; // display the XML error in the debug
 
-    if (_item->_httpErrorCode == 412) {
-        // Precondition Failed: Either an etag or a checksum mismatch.
-
-        // Maybe the bad etag is in the database, we need to clear the
-        // parent folder etag so we won't read from DB next sync.
-        propagator()->_journal->schedulePathForRemoteDiscovery(_item->_file);
+    if (_item->_httpErrorCode == LockFileJob::PRECONDITION_FAILED_ERROR_CODE
+        || _item->_httpErrorCode == LockFileJob::LOCKED_HTTP_ERROR_CODE) {
+        // Clear any stale lock token from the journal. The token may be absent from
+        // _item when the file was discovered via local (not remote) discovery, so
+        // check the DB record directly rather than guarding on _item->_lockToken.
+        SyncJournalFileRecord record;
+        if (propagator()->_journal->getFileRecord(_item->_file, &record) && record.isValid()
+            && !record._lockstate._lockToken.isEmpty()) {
+            record._lockstate._lockToken.clear();
+            record._lockstate._locked = false;
+            if (const auto result = propagator()->_journal->setFileRecord(record); !result) {
+                qCWarning(lcPropagateUpload) << "Failed to clear stale lock token for" << _item->_file << result.error();
+            }
+        }
+        _item->_lockToken.clear();
+        _item->_locked = SyncFileItem::LockStatus::UnlockedItem;
         propagator()->_anotherSyncNeeded = true;
+        if (_item->_httpErrorCode == LockFileJob::PRECONDITION_FAILED_ERROR_CODE) {
+            propagator()->_journal->schedulePathForRemoteDiscovery(_item->_file);
+        }
     }
 
     // Ensure errors that should eventually reset the chunked upload are tracked.
@@ -721,7 +752,7 @@ void PropagateUploadFileCommon::commonErrorHandling(AbstractNetworkJob *job)
         // Set up the error
         status = SyncFileItem::DetailError;
         errorString = tr("Upload of %1 exceeds the quota for the folder").arg(Utility::octetsToString(_fileToUpload._size));
-        emit propagator()->insufficientRemoteStorage();
+        Q_EMIT propagator()->insufficientRemoteStorage();
     } else if (_item->_httpErrorCode == 400) {
         const auto exception = job->errorStringParsingBodyException(replyContent);
 
@@ -771,8 +802,9 @@ QMap<QByteArray, QByteArray> PropagateUploadFileCommon::headers()
         qCWarning(lcPropagateUpload()) << "invalid modified time" << _item->_file << _item->_modtime;
     }
     headers[QByteArrayLiteral("X-OC-Mtime")] = QByteArray::number(qint64(_item->_modtime));
-    if (qEnvironmentVariableIntValue("OWNCLOUD_LAZYOPS"))
+    if (qEnvironmentVariableIntValue("OWNCLOUD_LAZYOPS")) {
         headers[QByteArrayLiteral("OC-LazyOps")] = QByteArrayLiteral("true");
+    }
 
     if (!_item->_etag.isEmpty() && _item->_etag != "empty_etag"
         && _item->_instruction != CSYNC_INSTRUCTION_NEW // On new files never send a If-Match
@@ -787,14 +819,18 @@ QMap<QByteArray, QByteArray> PropagateUploadFileCommon::headers()
     auto conflictRecord = propagator()->_journal->conflictRecord(_item->_file.toUtf8());
     if (conflictRecord.isValid()) {
         headers[QByteArrayLiteral("OC-Conflict")] = "1";
-        if (!conflictRecord.initialBasePath.isEmpty())
+        if (!conflictRecord.initialBasePath.isEmpty()) {
             headers[QByteArrayLiteral("OC-ConflictInitialBasePath")] = conflictRecord.initialBasePath;
-        if (!conflictRecord.baseFileId.isEmpty())
+        }
+        if (!conflictRecord.baseFileId.isEmpty()) {
             headers[QByteArrayLiteral("OC-ConflictBaseFileId")] = conflictRecord.baseFileId;
-        if (conflictRecord.baseModtime != -1)
+        }
+        if (conflictRecord.baseModtime != -1) {
             headers[QByteArrayLiteral("OC-ConflictBaseMtime")] = QByteArray::number(conflictRecord.baseModtime);
-        if (!conflictRecord.baseEtag.isEmpty())
+        }
+        if (!conflictRecord.baseEtag.isEmpty()) {
             headers[QByteArrayLiteral("OC-ConflictBaseEtag")] = conflictRecord.baseEtag;
+        }
     }
 
     if (_uploadEncryptedHelper && !_uploadEncryptedHelper->folderToken().isEmpty()) {
@@ -808,8 +844,9 @@ void PropagateUploadFileCommon::finalize()
 {
     // Update the quota, if known
     auto quotaIt = propagator()->_folderQuota.find(QFileInfo(_item->_file).path());
-    if (quotaIt != propagator()->_folderQuota.end())
+    if (quotaIt != propagator()->_folderQuota.end()) {
         quotaIt.value() -= _fileToUpload._size;
+    }
 
     // Update the database entry
     const auto result = propagator()->updateMetadata(*_item, Vfs::DatabaseMetadata);
@@ -853,8 +890,9 @@ void PropagateUploadFileCommon::abortNetworkJobs(
     PropagatorJob::AbortType abortType,
     const std::function<bool(AbstractNetworkJob *)> &mayAbortJob)
 {
-    if (_aborting)
+    if (_aborting) {
         return;
+    }
     _aborting = true;
 
     // Count the number of jobs that need aborting, and emit the overall
@@ -863,15 +901,16 @@ void PropagateUploadFileCommon::abortNetworkJobs(
     auto oneAbortFinished = [this, runningCount]() {
         (*runningCount)--;
         if (*runningCount == 0) {
-            emit this->abortFinished();
+            Q_EMIT this->abortFinished();
         }
     };
 
     // Abort all running jobs, except for explicitly excluded ones
     for (const auto job : std::as_const(_jobs)) {
         auto reply = job->reply();
-        if (!reply || !reply->isRunning())
+        if (!reply || !reply->isRunning()) {
             continue;
+        }
 
         (*runningCount)++;
 
@@ -880,8 +919,9 @@ void PropagateUploadFileCommon::abortNetworkJobs(
         // zero.
         // We may however finish before that if the un-abortable job completes
         // normally.
-        if (!mayAbortJob(job))
+        if (!mayAbortJob(job)) {
             continue;
+        }
 
         // Abort the job
         if (abortType == AbortType::Asynchronous) {
@@ -891,7 +931,10 @@ void PropagateUploadFileCommon::abortNetworkJobs(
         reply->abort();
     }
 
-    if (*runningCount == 0 && abortType == AbortType::Asynchronous)
-        emit abortFinished();
+    if (*runningCount == 0 && abortType == AbortType::Asynchronous) {
+        Q_EMIT abortFinished();
+    }
 }
 }
+
+#include "moc_propagateupload.cpp"

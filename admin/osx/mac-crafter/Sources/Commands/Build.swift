@@ -89,9 +89,6 @@ struct Build: AsyncParsableCommand {
     
     @Flag(help: "Build File Provider Module.")
     var buildFileProviderModule = false
-    
-    @Flag(help: "Build without QtWebEngine.")
-    var withoutWebEngine = false
 
     @Flag(help: "Build without Sparkle auto-updater.")
     var disableAutoUpdater = false
@@ -201,8 +198,7 @@ struct Build: AsyncParsableCommand {
             "\(craftBlueprintName).osxArchs=\(arch)",
             "\(craftBlueprintName).buildTests=\(buildTests ? "True" : "False")",
             "\(craftBlueprintName).buildMacOSBundle=\(disableAppBundle ? "False" : "True")",
-            "\(craftBlueprintName).buildFileProviderModule=\(buildFileProviderModule ? "True" : "False")",
-            "\(craftBlueprintName).buildWithWebEngine=\(withoutWebEngine ? "False" : "True")"
+            "\(craftBlueprintName).buildFileProviderModule=\(buildFileProviderModule ? "True" : "False")"
         ]
         
         if let overrideServerUrl {
@@ -210,9 +206,13 @@ struct Build: AsyncParsableCommand {
             craftOptions.append("\(craftBlueprintName).forceOverrideServerUrl=\(forceOverrideServerUrl ? "True" : "False")")
         }
         
+        // Always pass devMode explicitly (like buildFileProviderModule above) so that
+        // dropping --dev reliably overrides any value KDE Craft has persisted from a
+        // previous build, keeping the app name in sync with what signing expects.
+        craftOptions.append("\(craftBlueprintName).devMode=\(dev ? "True" : "False")")
+
         if dev {
             appName += "Dev"
-            craftOptions.append("\(craftBlueprintName).devMode=True")
         }
         
         if disableAutoUpdater == false {
@@ -378,12 +378,50 @@ struct Build: AsyncParsableCommand {
                 .appendingPathComponent("shell_integration")
                 .appendingPathComponent("MacOSX")
 
-            let entitlements: [String: URL] = [
+            var entitlements: [String: URL] = [
                 "\(appName).app": appEntitlements,
-                "FileProviderExt.appex": entitlementsDirectory.appendingPathComponent("FileProviderExt.entitlements"),
-                "FileProviderUIExt.appex": entitlementsDirectory.appendingPathComponent("FileProviderUIExt.entitlements"),
                 "FinderSyncExt.appex": entitlementsDirectory.appendingPathComponent("FinderSyncExt.entitlements"),
             ]
+
+            // The FinderSync broker login item. Its wrapper filename has to equal its bundle
+            // identifier, which carries the branded reverse domain -- and that is not something
+            // mac-crafter is told, so the dictionary key cannot be constructed here. Discover it
+            // from the built bundle instead; there is exactly one manifest for login items.
+            let loginItemsLocation = clientAppURL
+                .appendingPathComponent("Contents")
+                .appendingPathComponent("Library")
+                .appendingPathComponent("LoginItems")
+
+            if let loginItems = try? FileManager.default.contentsOfDirectory(
+                at: loginItemsLocation, includingPropertiesForKeys: nil
+            ) {
+                let loginItemEntitlements = entitlementsDirectory
+                    .appendingPathComponent("FinderSyncBroker.entitlements")
+
+                for loginItem in loginItems where loginItem.pathExtension == "app" {
+                    entitlements[loginItem.lastPathComponent] = loginItemEntitlements
+                }
+            } else {
+                Log.info("No LoginItems directory in the built bundle; skipping login item entitlements.")
+            }
+
+            // The File Provider extension and its UI extension -- and their entitlement
+            // manifests -- are only produced by CMake when BUILD_FILE_PROVIDER_MODULE is
+            // enabled (see shell_integration/MacOSX/CMakeLists.txt). Reference them only
+            // when the manifests are present, so a build without --build-file-provider-module
+            // does not reference non-existent files.
+            let fileProviderEntitlements = [
+                "FileProviderExt.appex": entitlementsDirectory.appendingPathComponent("FileProviderExt.entitlements"),
+                "FileProviderUIExt.appex": entitlementsDirectory.appendingPathComponent("FileProviderUIExt.entitlements"),
+            ]
+
+            for (bundleName, manifest) in fileProviderEntitlements {
+                if FileManager.default.fileExists(atPath: manifest.path) {
+                    entitlements[bundleName] = manifest
+                } else {
+                    Log.info("Skipping \(bundleName): entitlement manifest not present (File Provider module not built).")
+                }
+            }
 
             for file in entitlements.values {
                 if FileManager.default.fileExists(atPath: file.path) {
@@ -393,7 +431,14 @@ struct Build: AsyncParsableCommand {
                 }
             }
 
-            try await Signer.signMainBundle(at: clientAppURL, codeSignIdentity: codeSignIdentity, entitlements: entitlements)
+            try await Signer.signMainBundle(
+                at: clientAppURL,
+                codeSignIdentity: codeSignIdentity,
+                entitlements: entitlements,
+                expectedTeamIdentifier: try CMakeConfiguration.developmentTeamIdentifier(
+                    at: repoRootURL.appendingPathComponent("NEXTCLOUD.cmake")
+                )
+            )
         }
         
         Log.info("Placing Nextcloud Desktop Client in \(productPath)...")

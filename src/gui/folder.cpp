@@ -85,8 +85,9 @@ Folder::Folder(const FolderDefinition &definition,
     _engine->setIgnoreHiddenFiles(_definition.ignoreHiddenFiles);
 
     ConfigFile::setupDefaultExcludeFilePaths(_engine->excludedFiles());
-    if (!reloadExcludes())
+    if (!reloadExcludes()) {
         qCWarning(lcFolder, "Could not read system exclude file");
+    }
 
     connect(_accountState.data(), &AccountState::termsOfServiceChanged,
             this, [this] ()
@@ -163,8 +164,9 @@ Folder::Folder(const FolderDefinition &definition,
 Folder::~Folder()
 {
     // If wipeForRemoval() was called the vfs has already shut down.
-    if (_vfs)
+    if (_vfs) {
         _vfs->stop();
+    }
 
     // Reset then engine first as it will abort and try to access members of the Folder
     _engine.reset();
@@ -209,7 +211,7 @@ void Folder::applySandboxBookmark(const QByteArray &bookmarkData,
     _syncResult.clearErrors();
     _syncResult.setStatus(SyncResult::NotYetStarted);
     saveToSettings();
-    emit syncStateChange();
+    Q_EMIT syncStateChange();
 }
 #endif
 
@@ -311,8 +313,9 @@ QString Folder::cleanPath() const
 {
     QString cleanedPath = QDir::cleanPath(_canonicalLocalPath);
 
-    if (cleanedPath.length() == 3 && cleanedPath.endsWith(":/"))
+    if (cleanedPath.length() == 3 && cleanedPath.endsWith(":/")) {
         cleanedPath.remove(2, 1);
+    }
 
     return cleanedPath;
 }
@@ -371,9 +374,9 @@ void Folder::setSyncPaused(bool paused)
     } else {
         setSyncState(SyncResult::Paused);
     }
-    emit syncPausedChanged(this, paused);
-    emit syncStateChange();
-    emit canSyncChanged();
+    Q_EMIT syncPausedChanged(this, paused);
+    Q_EMIT syncStateChange();
+    Q_EMIT canSyncChanged();
 }
 
 void Folder::setSyncState(SyncResult::Status state)
@@ -558,8 +561,9 @@ void Folder::createGuiLog(const QString &filename, LogStatus status, int count,
 
         if (!text.isEmpty()) {
             // Ignores the settings in case of an error or conflict
-            if(status == LogStatusError || status == LogStatusConflict)
+            if (status == LogStatusError || status == LogStatusConflict) {
                 logger->postGuiLog(tr("Sync Activity"), text);
+            }
         }
     }
 }
@@ -580,6 +584,7 @@ void Folder::startVfs()
     qCDebug(lcFolder) << "Display name for VFS folder will be:" << displayName;
     VfsSetupParams vfsParams;
     vfsParams.filesystemPath = path();
+    vfsParams.rootPath = FileSystem::Path{path()};
     vfsParams.displayName = displayName;
     vfsParams.alias = alias();
     vfsParams.navigationPaneClsid = navigationPaneClsid().toString();
@@ -588,6 +593,7 @@ void Folder::startVfs()
     vfsParams.journal = &_journal;
     vfsParams.providerName = Theme::instance()->appNameGUI();
     vfsParams.providerVersion = Theme::instance()->version();
+    vfsParams.socketPath = FolderMan::instance()->socketApi()->socketPath();
     vfsParams.multipleAccountsRegistered = AccountManager::instance()->accounts().size() > 1;
 
     connect(_vfs.data(), &Vfs::beginHydrating, this, &Folder::slotHydrationStarts);
@@ -596,6 +602,14 @@ void Folder::startVfs()
 
     connect(&_engine->syncFileStatusTracker(), &SyncFileStatusTracker::fileStatusChanged,
             _vfs.data(), &Vfs::fileStatusChanged);
+
+    connect(_vfs.get(), &Vfs::needSync, this, [this] {
+        if (canSync()) {
+            // the vfs plugin detected that its metadata is out of sync and requests a new sync
+            // the request has a hight priority as it is probably issued after a user request
+            FolderMan::instance()->scheduleFolder(this);
+        }
+    });
 
     _vfs->start(vfsParams);
 
@@ -732,7 +746,7 @@ void Folder::slotWatchedPathChanged(const QStringView &path, const ChangeReason 
     }
     warnOnNewExcludedItem(record, relativePath);
 
-    emit watchedFileChangedExternally(path.toString());
+    Q_EMIT watchedFileChangedExternally(path.toString());
 
     // Also schedule this folder for a sync, but only after some delay:
     // The sync will not upload files that were changed too recently.
@@ -1001,11 +1015,6 @@ bool Folder::pathIsIgnored(const QString &path) const
         return true;
     }
 
-    if (OCC::FileSystem::isFileLocked(path, OCC::FileSystem::LockMode::SharedRead)) {
-        qCDebug(lcFolder) << path << "is locked" << "skip syncing it";
-        return true;
-    }
-
 #ifndef OWNCLOUD_TEST
     if (isFileExcludedAbsolute(path) && !Utility::isConflictFile(path)) {
         qCDebug(lcFolder) << "* Ignoring file" << path;
@@ -1174,7 +1183,7 @@ void Folder::startSync(const QStringList &pathList)
 
     _timeSinceLastSyncStart.start();
     _syncResult.setStatus(SyncResult::SyncPrepare);
-    emit syncStateChange();
+    Q_EMIT syncStateChange();
 
     qCInfo(lcFolder) << "*** Start syncing " << remoteUrl().toString() << " -" << APPLICATION_NAME << "client version"
                      << qPrintable(Theme::instance()->version());
@@ -1228,7 +1237,7 @@ void Folder::startSync(const QStringList &pathList)
 
     QMetaObject::invokeMethod(_engine.data(), "startSync", Qt::QueuedConnection);
 
-    emit syncStarted();
+    Q_EMIT syncStarted();
 }
 
 void Folder::correctPlaceholderFiles()
@@ -1309,20 +1318,20 @@ void Folder::slotSyncError(const QString &message, ErrorCategory category)
 {
     if (!_silenceErrorsUntilNextSync) {
         _syncResult.appendErrorString(message);
-        emit ProgressDispatcher::instance()->syncError(alias(), message, category);
+        Q_EMIT ProgressDispatcher::instance()->syncError(alias(), message, category);
     }
 }
 
 void Folder::slotAddErrorToGui(SyncFileItem::Status status, const QString &errorMessage, const QString &subject, ErrorCategory category)
 {
-    emit ProgressDispatcher::instance()->addErrorToGui(alias(), status, errorMessage, subject, category);
+    Q_EMIT ProgressDispatcher::instance()->addErrorToGui(alias(), status, errorMessage, subject, category);
 }
 
 void Folder::slotSyncStarted()
 {
     qCInfo(lcFolder) << "#### Propagation start ####################################################";
     _syncResult.setStatus(SyncResult::SyncRunning);
-    emit syncStateChange();
+    Q_EMIT syncStateChange();
 }
 
 void Folder::slotSyncFinished(bool success)
@@ -1374,7 +1383,7 @@ void Folder::slotSyncFinished(bool success)
         }
     }
 
-    emit syncStateChange();
+    Q_EMIT syncStateChange();
 
     // The syncFinished result that is to be triggered here makes the folderman
     // clear the current running sync folder marker.
@@ -1407,7 +1416,7 @@ void Folder::slotSyncFinished(bool success)
 
 void Folder::slotEmitFinishedDelayed()
 {
-    emit syncFinished(_syncResult);
+    Q_EMIT syncFinished(_syncResult);
 
     // Immediately check the etag again if there was some sync activity.
     if ((_syncResult.status() == SyncResult::Success
@@ -1425,7 +1434,7 @@ void Folder::slotEmitFinishedDelayed()
 // and hand the result over to the progress dispatcher.
 void Folder::slotTransmissionProgress(const ProgressInfo &pi)
 {
-    emit progressInfo(pi);
+    Q_EMIT progressInfo(pi);
     ProgressDispatcher::instance()->setProgressInfo(alias(), pi);
 }
 
@@ -1446,7 +1455,7 @@ void Folder::slotItemCompleted(const SyncFileItemPtr &item, ErrorCategory errorC
     _syncResult.processCompletedItem(item);
 
     _fileLog->logItem(*item);
-    emit ProgressDispatcher::instance()->itemCompleted(alias(), item, errorCategory);
+    Q_EMIT ProgressDispatcher::instance()->itemCompleted(alias(), item, errorCategory);
 }
 
 void Folder::slotNewBigFolderDiscovered(const QString &newF, bool isExternal)
@@ -1470,7 +1479,7 @@ void Folder::slotNewBigFolderDiscovered(const QString &newF, bool isExternal)
         if (!undecidedList.contains(newFolder)) {
             undecidedList.append(newFolder);
             journal->setSelectiveSyncList(SyncJournalDb::SelectiveSyncUndecidedList, undecidedList);
-            emit newBigFolderDiscovered(newFolder);
+            Q_EMIT newBigFolderDiscovered(newFolder);
         }
         QString message = !isExternal ? (tr("A new folder larger than %1 MB has been added: %2.\n")
                                                 .arg(ConfigFile().newBigFolderSizeLimit().second)
@@ -1520,7 +1529,7 @@ void Folder::slotExistingFolderNowBig(const QString &folderPath)
         if (!undecidedList.contains(trailSlashFolderPath)) {
             undecidedList.append(trailSlashFolderPath);
             journal->setSelectiveSyncList(SyncJournalDb::SelectiveSyncUndecidedList, undecidedList);
-            emit newBigFolderDiscovered(trailSlashFolderPath);
+            Q_EMIT newBigFolderDiscovered(trailSlashFolderPath);
         }
 
         postExistingFolderNowBigNotification(folderPath);
@@ -1602,13 +1611,15 @@ void Folder::schedulePathForLocalDiscovery(const QString &relativePath)
 
 void Folder::slotFolderConflicts(const QString &folder, const QStringList &conflictPaths)
 {
-    if (folder != _definition.alias)
+    if (folder != _definition.alias) {
         return;
+    }
     auto &r = _syncResult;
 
     // If the number of conflicts is too low, adjust it upwards
-    if (conflictPaths.size() > r.numNewConflictItems() + r.numOldConflictItems())
+    if (conflictPaths.size() > r.numNewConflictItems() + r.numOldConflictItems()) {
         r.setNumOldConflictItems(conflictPaths.size() - r.numNewConflictItems());
+    }
 }
 
 void Folder::warnOnNewExcludedItem(const SyncJournalFileRecord &record, const QStringView &path)
@@ -1676,16 +1687,16 @@ void Folder::slotHydrationStarts()
     // // Let everyone know we're syncing
     // _syncResult.reset();
     // _syncResult.setStatus(SyncResult::SyncRunning);
-    // emit syncStarted();
-    // emit syncStateChange();
+    // Q_EMIT syncStarted();
+    // Q_EMIT syncStateChange();
 }
 
 void Folder::slotHydrationDone()
 {
-    // emit signal to update ui and reschedule normal syncs if necessary
+    // Q_EMIT signal to update ui and reschedule normal syncs if necessary
     _syncResult.setStatus(SyncResult::Success);
-    emit syncFinished(_syncResult);
-    emit syncStateChange();
+    Q_EMIT syncFinished(_syncResult);
+    Q_EMIT syncStateChange();
 }
 
 void Folder::slotHydrationFailed(int errorCode, int statusCode, const QString &errorString, const QString &fileName)
@@ -1739,10 +1750,12 @@ void Folder::setSaveBackwardsCompatible(bool save)
 
 void Folder::registerFolderWatcher()
 {
-    if (_folderWatcher)
+    if (_folderWatcher) {
         return;
-    if (!QDir(path()).exists())
+    }
+    if (!QDir(path()).exists()) {
         return;
+    }
 
     _folderWatcher.reset(new FolderWatcher(this));
     connect(_folderWatcher.data(), &FolderWatcher::pathChanged,
@@ -1909,16 +1922,18 @@ void FolderDefinition::save(QSettings &settings, const FolderDefinition &folder)
     }
 
     // Happens only on Windows when the explorer integration is enabled.
-    if (!folder.navigationPaneClsid.isNull())
+    if (!folder.navigationPaneClsid.isNull()) {
         settings.setValue(QLatin1String("navigationPaneClsid"), folder.navigationPaneClsid);
-    else
+    } else {
         settings.remove(QLatin1String("navigationPaneClsid"));
+    }
 
     // macOS sandbox: persist security-scoped bookmark data
-    if (!folder.securityScopedBookmarkData.isEmpty())
+    if (!folder.securityScopedBookmarkData.isEmpty()) {
         settings.setValue(QLatin1String("securityScopedBookmarkData"), folder.securityScopedBookmarkData);
-    else
+    } else {
         settings.remove(QLatin1String("securityScopedBookmarkData"));
+    }
 }
 
 bool FolderDefinition::load(QSettings &settings, const QString &alias,

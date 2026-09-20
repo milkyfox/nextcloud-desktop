@@ -37,6 +37,8 @@ QString Vfs::modeToString(Mode mode)
         return QStringLiteral("wincfapi");
     case XAttr:
         return QStringLiteral("xattr");
+    case OpenVFS:
+        return QStringLiteral("openvfs");
     }
     return QStringLiteral("off");
 }
@@ -50,6 +52,10 @@ Optional<Vfs::Mode> Vfs::modeFromString(const QString &str)
         return WithSuffix;
     } else if (str == QLatin1String("wincfapi")) {
         return WindowsCfApi;
+    } else if (str == QLatin1String("xattr")) {
+        return XAttr;
+    } else if (str == QLatin1String("openvfs")) {
+        return OpenVFS;
     }
     return {};
 }
@@ -89,8 +95,9 @@ bool Vfs::setPinStateInDb(const QString &folderPath, PinState state)
 {
     auto path = folderPath.toUtf8();
     _setupParams.journal->internalPinStates().wipeForPathAndBelow(path);
-    if (state != PinState::Inherited)
+    if (state != PinState::Inherited) {
         _setupParams.journal->internalPinStates().setForPath(path, state);
+    }
     return true;
 }
 
@@ -106,21 +113,25 @@ Vfs::AvailabilityResult Vfs::availabilityInDb(const QString &folderPath)
     auto pin = _setupParams.journal->internalPinStates().effectiveForPathRecursive(path);
     // not being able to retrieve the pin state isn't too bad
     auto hydrationStatus = _setupParams.journal->hasHydratedOrDehydratedFiles(path);
-    if (!hydrationStatus)
+    if (!hydrationStatus) {
         return AvailabilityError::DbError;
+    }
 
     if (hydrationStatus->hasDehydrated) {
-        if (hydrationStatus->hasHydrated)
+        if (hydrationStatus->hasHydrated) {
             return VfsItemAvailability::Mixed;
-        if (pin && *pin == PinState::OnlineOnly)
+        }
+        if (pin && *pin == PinState::OnlineOnly) {
             return VfsItemAvailability::OnlineOnly;
-        else
+        } else {
             return VfsItemAvailability::AllDehydrated;
+        }
     } else if (hydrationStatus->hasHydrated) {
-        if (pin && *pin == PinState::AlwaysLocal)
+        if (pin && *pin == PinState::AlwaysLocal) {
             return VfsItemAvailability::AlwaysLocal;
-        else
+        } else {
             return VfsItemAvailability::AllHydrated;
+        }
     }
     return AvailabilityError::NoSuchItem;
 }
@@ -132,15 +143,27 @@ VfsOff::VfsOff(QObject *parent)
 
 VfsOff::~VfsOff() = default;
 
+HydrationJob *VfsOff::hydrateFile([[maybe_unused]] const QByteArray &fileId, [[maybe_unused]] const QString &targetPath)
+{
+    return nullptr;
+}
+
 static QString modeToPluginName(Vfs::Mode mode)
 {
-    if (mode == Vfs::WithSuffix)
+    switch (mode) {
+    case Vfs::Off:
+        return {};
+    case Vfs::WithSuffix:
         return QStringLiteral("suffix");
-    if (mode == Vfs::WindowsCfApi)
+    case Vfs::WindowsCfApi:
         return QStringLiteral("cfapi");
-    if (mode == Vfs::XAttr)
+    case Vfs::XAttr:
         return QStringLiteral("xattr");
-    return QString();
+    case Vfs::OpenVFS:
+        return QStringLiteral("openvfs");
+    }
+
+    return {};
 }
 
 Q_LOGGING_CATEGORY(lcPlugin, "plugins", QtInfoMsg)
@@ -195,6 +218,10 @@ Vfs::Mode OCC::bestAvailableVfsMode()
         return Vfs::WindowsCfApi;
     }
 
+    if (isVfsPluginAvailable(Vfs::OpenVFS)) {
+        return Vfs::OpenVFS;
+    }
+
     if (isVfsPluginAvailable(Vfs::WithSuffix)) {
         return Vfs::WithSuffix;
     }
@@ -224,8 +251,9 @@ Vfs::Mode OCC::bestAvailableVfsMode()
 
 std::unique_ptr<Vfs> OCC::createVfsFromPlugin(Vfs::Mode mode)
 {
-    if (mode == Vfs::Off)
+    if (mode == Vfs::Off) {
         return std::unique_ptr<Vfs>(new VfsOff);
+    }
 
     auto name = modeToPluginName(mode);
     if (name.isEmpty()) {
@@ -251,6 +279,10 @@ std::unique_ptr<Vfs> OCC::createVfsFromPlugin(Vfs::Mode mode)
         qCCritical(lcPlugin) << "Plugin" << loader.fileName() << "does not implement PluginFactory";
         return nullptr;
     }
+    if (!factory->checkAvailability()) {
+        qCCritical(lcPlugin) << "Plugin" << loader.fileName() << "does not implement PluginFactory";
+        return nullptr;
+    }
 
     auto vfs = std::unique_ptr<Vfs>(qobject_cast<Vfs *>(factory->create(nullptr)));
     if (!vfs) {
@@ -260,4 +292,9 @@ std::unique_ptr<Vfs> OCC::createVfsFromPlugin(Vfs::Mode mode)
 
     qCInfo(lcPlugin) << "Created VFS instance from plugin" << pluginPath;
     return vfs;
+}
+
+const FileSystem::Path &VfsSetupParams::root() const
+{
+    return rootPath;
 }

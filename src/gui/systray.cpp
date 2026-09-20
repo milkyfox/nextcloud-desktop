@@ -4,29 +4,37 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "accountmanager.h"
 #include "systray.h"
-#include "theme.h"
-#include "config.h"
+#include "accessmanager.h"
+#include "accountmanager.h"
+#include "accountstate.h"
+#include "activity/syncstatussummary.h"
+#include "assistant/assistantmodule.h"
+#include "callstatechecker.h"
+#include "common/syncjournalfilerecord.h"
 #include "common/utility.h"
+#include "config.h"
+#include "configfile.h"
+#include "guiutility.h"
+#include "theme.h"
 #include "tray/svgimageprovider.h"
+#include "tray/trayimageprovider.h"
 #include "tray/usermodel.h"
 #include "wheelhandler.h"
-#include "tray/trayimageprovider.h"
-#include "configfile.h"
-#include "accessmanager.h"
-#include "callstatechecker.h"
-#include "guiutility.h"
+
+#ifdef Q_OS_MACOS
+#include "foregroundbackground_interface.h"
+#endif
 
 #include <QCursor>
+#include <QEvent>
 #include <QGuiApplication>
-#include <QQmlApplicationEngine>
-#include <QQmlContext>
-#include <QQuickWindow>
-#include <QVariantMap>
-#include <QScreen>
 #include <QMenu>
-#include <QGuiApplication>
+#include <QMouseEvent>
+#include <QQmlApplicationEngine>
+#include <QQuickWindow>
+#include <QScreen>
+#include <QVariantMap>
 
 #ifdef USE_FDO_NOTIFICATIONS
 #include <QDBusConnection>
@@ -38,9 +46,64 @@
 #define NOTIFICATIONS_IFACE "org.freedesktop.Notifications"
 #endif
 
+using namespace Qt::StringLiterals;
+
 namespace OCC {
 
 Q_LOGGING_CATEGORY(lcSystray, "nextcloud.gui.systray")
+
+namespace {
+#if defined(Q_OS_MACOS)
+constexpr auto macOSWindowDragHandleHeight = 28;
+
+class QuickWindowDragHandle : public QObject
+{
+public:
+    explicit QuickWindowDragHandle(QQuickWindow *window)
+        : QObject(window)
+        , _window(window)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (!_window || event->type() != QEvent::MouseButtonPress) {
+            return QObject::eventFilter(watched, event);
+        }
+
+        const auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() != Qt::LeftButton) {
+            return QObject::eventFilter(watched, event);
+        }
+
+        const auto windowPosition = _window->mapFromGlobal(mouseEvent->globalPosition().toPoint());
+        if (windowPosition.y() < 0 || windowPosition.y() > macOSWindowDragHandleHeight) {
+            return QObject::eventFilter(watched, event);
+        }
+
+        if (_window->startSystemMove()) {
+            event->accept();
+            return true;
+        }
+
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QPointer<QQuickWindow> _window;
+};
+
+void configureMacOSExpandedQuickWindow(QQuickWindow *window)
+{
+    window->setFlag(Qt::ExpandedClientAreaHint, true);
+    window->setFlag(Qt::NoTitleBarBackgroundHint, true);
+
+    auto *dragHandle = new QuickWindowDragHandle(window);
+    window->installEventFilter(dragHandle);
+}
+#endif
+}
 
 Systray *Systray::_instance = nullptr;
 
@@ -57,9 +120,13 @@ QQmlApplicationEngine *Systray::trayEngine() const
     return _trayEngine.get();
 }
 
-void Systray::setTrayEngine(QQmlApplicationEngine *trayEngine)
+void Systray::createTrayEngine()
 {
-    _trayEngine = std::make_unique<QQmlApplicationEngine>(trayEngine);
+    if (_trayEngine) {
+        return;
+    }
+
+    _trayEngine = std::make_unique<QQmlApplicationEngine>();
 
     _trayEngine->setNetworkAccessManagerFactory(&_accessManagerFactory);
 
@@ -70,9 +137,9 @@ void Systray::setTrayEngine(QQmlApplicationEngine *trayEngine)
     _trayEngine->addImageProvider(QLatin1String("tray-image-provider"), new TrayImageProvider);
 }
 
-bool Systray::openUrlInBrowser(const QUrl &url) const
+void Systray::openUrlInBrowser(const QUrl &url) const
 {
-    return Utility::openBrowser(url);
+    Utility::openBrowser(url);
 }
 
 Systray::Systray()
@@ -90,14 +157,12 @@ Systray::Systray()
     setupContextMenu();
 #endif
 
-    connect(UserModel::instance(), &UserModel::currentUserChanged,
-        this, &Systray::slotCurrentUserChanged);
     connect(UserModel::instance(), &UserModel::addAccount,
             this, &Systray::openAccountWizard);
 
 #if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
     connect(AccountManager::instance(), &AccountManager::accountAdded,
-        this, [this]{ showWindow(); });
+        this, [this]{ showTrayPopup(); });
 #else
     // Since the positioning of the QSystemTrayIcon is borked on non-Windows and non-macOS desktop environments,
     // we hardcode the position of the tray to be in the center when we add a new account from somewhere like
@@ -105,84 +170,45 @@ Systray::Systray()
     // is placed
 
     connect(AccountManager::instance(), &AccountManager::accountAdded,
-        this, [this]{ showWindow(WindowPosition::Center); });
+        this, [this]{ showTrayPopup(WindowPosition::Center); });
 #endif
-
-    connect(FolderMan::instance(), &FolderMan::folderListChanged, this, &Systray::slotSyncFoldersChanged);
-    slotSyncFoldersChanged(FolderMan::instance()->map());
 }
 
 void Systray::create()
 {
-    if (_trayEngine) {
-        if (!AccountManager::instance()->accounts().isEmpty()) {
-            _trayEngine->rootContext()->setContextProperty("activityModel", UserModel::instance()->currentActivityModel());
-        } else {
-            _trayEngine->rootContext()->setContextProperty("activityModel", &_fakeActivityModel);
-        }
-
-        QQmlComponent trayWindowComponent(trayEngine(), QStringLiteral("qrc:/qml/src/gui/tray/MainWindow.qml"));
-
-        if(trayWindowComponent.isError()) {
-            qCWarning(lcSystray) << trayWindowComponent.errorString();
-        } else {
-            _trayWindow.reset(qobject_cast<QQuickWindow*>(trayWindowComponent.create()));
-        }
-
-#ifndef Q_OS_MACOS
-        QQmlComponent popupComponent(trayEngine(), QStringLiteral("qrc:/qml/src/gui/tray/TrayAccountPopup.qml"));
-        if (popupComponent.isError()) {
-            qCWarning(lcSystray) << popupComponent.errorString();
-        } else {
-            _popupWindow.reset(qobject_cast<QQuickWindow*>(popupComponent.create()));
-        }
-#endif
-    }
     hideWindow();
-    emit activated(QSystemTrayIcon::ActivationReason::Unknown);
-    slotUpdateSyncPausedState();
-    connect(FolderMan::instance(), &FolderMan::folderListChanged, this, &Systray::slotUpdateSyncPausedState);
+    Q_EMIT activated(QSystemTrayIcon::ActivationReason::Unknown);
 }
 
 void Systray::showWindow(WindowPosition position)
+{
+    Q_UNUSED(position)
+
+    Q_EMIT openSettings();
+}
+
+void Systray::showTrayPopup(WindowPosition position)
 {
     if (isOpen()) {
         return;
     }
 
+    if (!isSystemTrayAvailable()) {
+        showWindow(position);
+        return;
+    }
+
 #ifdef Q_OS_MACOS
-    if (!useNormalWindow()) {
-        showMacOSTrayPopup(geometry());
+    Q_UNUSED(position)
+    if (showMacOSTrayPopup(geometry())) {
         setIsOpen(true);
         UserModel::instance()->fetchCurrentActivityModel();
-        return;
     }
 #else
-    if (!useNormalWindow() && _popupWindow) {
-        positionWindowAtTray(_popupWindow.data());
-        _popupWindow->show();
-        _popupWindow->raise();
-        _popupWindow->requestActivate();
+    if (showQtTrayPopup(this, geometry(), position)) {
         setIsOpen(true);
-        return;
     }
 #endif
-
-    if (!_trayWindow) {
-        return;
-    }
-
-    if (position == WindowPosition::Center) {
-        positionWindowAtScreenCenter(_trayWindow.data());
-    } else {
-        positionWindowAtTray(_trayWindow.data());
-    }
-    _trayWindow->show();
-    _trayWindow->raise();
-    _trayWindow->requestActivate();
-
-    setIsOpen(true);
-    UserModel::instance()->fetchCurrentActivityModel();
 }
 
 void Systray::hideWindow()
@@ -192,53 +218,334 @@ void Systray::hideWindow()
     }
 
 #ifdef Q_OS_MACOS
-    if (!useNormalWindow()) {
-        hideMacOSTrayPopup();
-        if (_trayWindow) {
-            _trayWindow->hide();
-        }
-        setIsOpen(false);
-        return;
-    }
+    hideMacOSTrayPopup();
 #else
-    if (!useNormalWindow()) {
-        if (_popupWindow) {
-            _popupWindow->hide();
-        }
-        if (_trayWindow) {
-            _trayWindow->hide();
-        }
-        setIsOpen(false);
-        return;
-    }
+    hideQtTrayPopup();
 #endif
-
-    if (!_trayWindow) {
-        return;
-    }
-
-    _trayWindow->hide();
     setIsOpen(false);
 }
 
-void Systray::showQMLWindow()
+void Systray::showActivitiesWindow(int userIndex)
 {
-    if (!_trayWindow) {
+    const auto userModel = UserModel::instance();
+    if (!userModel) {
         return;
     }
-#ifdef Q_OS_MACOS
-    hideMacOSTrayPopup();
-#else
-    if (_popupWindow) {
-        _popupWindow->hide();
+
+    const auto targetUserId = userIndex >= 0 ? userIndex : userModel->currentUserId();
+    const auto user = userModel->user(targetUserId);
+    if (!user) {
+        qCWarning(lcSystray) << "Invalid user index for activities window:" << targetUserId;
+        return;
     }
+
+    const auto accountState = user->accountState();
+    if (!accountState) {
+        qCWarning(lcSystray) << "Could not open activities window without an account state";
+        return;
+    }
+
+    hideWindow();
+
+    if (!_trayEngine) {
+        qCWarning(lcSystray) << "Could not open activities window as no tray engine was available";
+        return;
+    }
+
+    const auto windowKey = user->account()->id();
+
+    if (const auto existingWindow = _activitiesWindows.value(windowKey)) {
+        const auto syncStatusModel = qvariant_cast<SyncStatusSummary *>(existingWindow->property("syncStatusModel"));
+        if (syncStatusModel) {
+            syncStatusModel->loadForAccount(accountState);
+        }
+        positionWindowAtScreenCenter(existingWindow.data());
+        existingWindow->show();
+        existingWindow->raise();
+        existingWindow->requestActivate();
+        user->refreshActivities();
+        return;
+    }
+
+    QQmlComponent activitiesWindowComponent(trayEngine(), QStringLiteral("qrc:/qml/src/gui/activity/qml/ActivitiesWindow.qml"));
+
+    if (activitiesWindowComponent.isError()) {
+        qCWarning(lcSystray) << activitiesWindowComponent.errorString();
+        qCWarning(lcSystray) << activitiesWindowComponent.errors();
+        return;
+    }
+
+    auto *const syncStatusModel = new SyncStatusSummary(this);
+    syncStatusModel->loadForAccount(accountState);
+    const QVariantMap initialProperties{
+        {"account", QVariantMap{
+                        {"avatar", user->avatarUrl()},
+                        {"name", user->name()},
+                        {"server", user->server()},
+                        {"accentColor", user->accentColor()},
+                    }},
+        {"activityUser", QVariant::fromValue(user)},
+        {"activityModel", QVariant::fromValue(user->getActivityModel())},
+        {"syncStatusModel", QVariant::fromValue(syncStatusModel)},
+    };
+
+    const auto createdObject = activitiesWindowComponent.createWithInitialProperties(initialProperties);
+    const auto window = qobject_cast<QQuickWindow *>(createdObject);
+    if (!window) {
+        qCWarning(lcSystray) << "Activities window resulted in creation of object that was not a window!";
+        if (createdObject) {
+            createdObject->deleteLater();
+        }
+        syncStatusModel->deleteLater();
+        return;
+    }
+
+    _activitiesWindows.insert(windowKey, window);
+    window->setIcon(Theme::instance()->applicationIcon());
+
+#ifdef Q_OS_MACOS
+    auto *fgbg = new ForegroundBackground(this);
+    window->installEventFilter(fgbg);
 #endif
-    positionWindowAtTray(_trayWindow.data());
-    _trayWindow->show();
-    _trayWindow->raise();
-    _trayWindow->requestActivate();
-    setIsOpen(true);
-    UserModel::instance()->fetchCurrentActivityModel();
+
+#if defined(Q_OS_MACOS)
+    configureMacOSExpandedQuickWindow(window);
+#endif
+
+    connect(window, &QObject::destroyed, this, [this, windowKey] {
+        _activitiesWindows.remove(windowKey);
+    });
+    connect(window, &QObject::destroyed, syncStatusModel, &QObject::deleteLater);
+
+    positionWindowAtScreenCenter(window);
+    window->show();
+    window->raise();
+    window->requestActivate();
+    user->refreshActivities();
+}
+
+void Systray::showAssistantWindow(int userIndex)
+{
+    const auto userModel = UserModel::instance();
+    if (!userModel) {
+        return;
+    }
+
+    const auto targetUserId = userIndex >= 0 ? userIndex : userModel->currentUserId();
+    const auto user = userModel->user(targetUserId);
+    if (!user || !user->isNcAssistantEnabled()) {
+        qCWarning(lcSystray) << "Not opening assistant window for account without assistant support:" << targetUserId;
+        return;
+    }
+
+    hideWindow();
+
+    if (!_trayEngine) {
+        qCWarning(lcSystray) << "Could not open assistant window as no tray engine was available";
+        return;
+    }
+
+    const auto windowKey = user->account()->id();
+
+    if (const auto existingWindow = _assistantWindows.value(windowKey)) {
+        positionWindowAtScreenCenter(existingWindow.data());
+        existingWindow->show();
+        existingWindow->raise();
+        existingWindow->requestActivate();
+        return;
+    }
+
+    const auto window = Assistant::createWindow(trayEngine(), user->accountState());
+    if (!window) {
+        return;
+    }
+
+    _assistantWindows.insert(windowKey, window);
+
+#ifdef Q_OS_MACOS
+    auto *fgbg = new ForegroundBackground(this);
+    window->installEventFilter(fgbg);
+#endif
+
+#if defined(Q_OS_MACOS)
+    configureMacOSExpandedQuickWindow(window);
+#endif
+
+    connect(window, &QObject::destroyed, this, [this, windowKey] {
+        _assistantWindows.remove(windowKey);
+    });
+
+    positionWindowAtScreenCenter(window);
+    window->show();
+    window->raise();
+    window->requestActivate();
+}
+
+void Systray::showSearchWindow(int userIndex)
+{
+    const auto userModel = UserModel::instance();
+    if (!userModel) {
+        return;
+    }
+
+    const auto targetUserId = userIndex >= 0 ? userIndex : userModel->currentUserId();
+    const auto user = userModel->user(targetUserId);
+    if (!user) {
+        qCWarning(lcSystray) << "Invalid user index for search window:" << targetUserId;
+        return;
+    }
+
+    hideWindow();
+
+    if (!_trayEngine) {
+        qCWarning(lcSystray) << "Could not open search window as no tray engine was available";
+        return;
+    }
+
+    const auto accountState = user->accountState();
+    if (!accountState) {
+        qCWarning(lcSystray) << "Could not open search window without an account state";
+        return;
+    }
+
+    const auto windowKey = user->account()->id();
+
+    if (const auto existingWindow = _searchWindows.value(windowKey)) {
+        positionWindowAtScreenCenter(existingWindow.data());
+        existingWindow->show();
+        existingWindow->raise();
+        existingWindow->requestActivate();
+        return;
+    }
+
+    QQmlComponent searchWindowComponent(trayEngine(), "com.nextcloud.desktopclient.search"_L1, "SearchWindow"_L1);
+
+    if (searchWindowComponent.isError()) {
+        qCWarning(lcSystray) << searchWindowComponent.errorString();
+        qCWarning(lcSystray) << searchWindowComponent.errors();
+        return;
+    }
+
+    const QVariantMap initialProperties{
+        {"account", QVariantMap{
+                        {"avatar", user->avatarUrl()},
+                        {"name", user->name()},
+                        {"server", user->server()},
+                    }},
+        {"accountId", targetUserId},
+    };
+    const auto createdObject = searchWindowComponent.createWithInitialProperties(initialProperties);
+    const auto window = qobject_cast<QQuickWindow *>(createdObject);
+    if (!window) {
+        qCWarning(lcSystray) << "Search window resulted in creation of object that was not a window!";
+        if (createdObject) {
+            createdObject->deleteLater();
+        }
+        return;
+    }
+
+    _searchWindows.insert(windowKey, window);
+    window->setIcon(Theme::instance()->applicationIcon());
+
+#ifdef Q_OS_MACOS
+    auto *fgbg = new ForegroundBackground(this);
+    window->installEventFilter(fgbg);
+#endif
+
+#if defined(Q_OS_MACOS)
+    configureMacOSExpandedQuickWindow(window);
+#endif
+
+    connect(window, &QObject::destroyed, this, [this, windowKey] {
+        _searchWindows.remove(windowKey);
+    });
+    connect(window, &QWindow::visibleChanged, window, [window](const bool visible) {
+        if (!visible) {
+            window->deleteLater();
+        }
+    });
+    connect(accountState.data(), &QObject::destroyed, window, [window] {
+        window->close();
+    });
+
+    positionWindowAtScreenCenter(window);
+    window->show();
+    window->raise();
+    window->requestActivate();
+}
+
+void Systray::showUserStatusWindow(int userIndex)
+{
+    const auto userModel = UserModel::instance();
+    if (!userModel || userIndex < 0 || userIndex >= userModel->rowCount()) {
+        qCWarning(lcSystray) << "Invalid user index for user status window:" << userIndex;
+        return;
+    }
+
+    const auto userModelIndex = userModel->index(userIndex);
+    if (!userModel->isUserConnected(userIndex)
+        || !userModel->data(userModelIndex, UserModel::ServerHasUserStatusRole).toBool()) {
+        qCDebug(lcSystray) << "Not opening user status window for disconnected or unsupported account:" << userIndex;
+        return;
+    }
+
+    hideWindow();
+
+    if (!_trayEngine) {
+        qCWarning(lcSystray) << "Could not open user status window as no tray engine was available";
+        return;
+    }
+
+    if (_userStatusWindow) {
+        _userStatusWindow->setProperty("userIndex", userIndex);
+        positionWindowAtScreenCenter(_userStatusWindow.data());
+        _userStatusWindow->show();
+        _userStatusWindow->raise();
+        _userStatusWindow->requestActivate();
+        return;
+    }
+
+    const QVariantMap initialProperties{
+        {"userIndex", userIndex},
+    };
+    QQmlComponent userStatusWindowComponent(trayEngine(), QStringLiteral("qrc:/qml/src/gui/UserStatusWindow.qml"));
+
+    if (userStatusWindowComponent.isError()) {
+        qCWarning(lcSystray) << userStatusWindowComponent.errorString();
+        qCWarning(lcSystray) << userStatusWindowComponent.errors();
+        return;
+    }
+
+    const auto createdObject = userStatusWindowComponent.createWithInitialProperties(initialProperties);
+    const auto window = qobject_cast<QQuickWindow *>(createdObject);
+    if (!window) {
+        qCWarning(lcSystray) << "User status window resulted in creation of object that was not a window!";
+        if (createdObject) {
+            createdObject->deleteLater();
+        }
+        return;
+    }
+
+    _userStatusWindow = window;
+    _userStatusWindow->setIcon(Theme::instance()->applicationIcon());
+
+#ifdef Q_OS_MACOS
+    auto *fgbg = new ForegroundBackground(this);
+    _userStatusWindow->installEventFilter(fgbg);
+#endif
+
+#if defined(Q_OS_MACOS)
+    configureMacOSExpandedQuickWindow(_userStatusWindow.data());
+#endif
+
+    connect(_userStatusWindow.data(), &QObject::destroyed, this, [this] {
+        _userStatusWindow = nullptr;
+    });
+
+    positionWindowAtScreenCenter(_userStatusWindow.data());
+    _userStatusWindow->show();
+    _userStatusWindow->raise();
+    _userStatusWindow->requestActivate();
 }
 
 void Systray::setupContextMenu()
@@ -255,10 +562,13 @@ void Systray::setupContextMenu()
     // will not work on GNOME, as the old menu will not be correctly replaced.
     setContextMenu(_contextMenu);
 
+#if defined(Q_OS_LINUX)
+    setupQtTrayContextMenu(_contextMenu, this);
+#else
     if (AccountManager::instance()->accounts().isEmpty()) {
         _contextMenu->addAction(tr("Add account"), this, &Systray::openAccountWizard);
     } else {
-        _contextMenu->addAction(tr("Open %1 Desktop", "Open Nextcloud main window. Placeholer will be the application name. Please keep it.").arg(APPLICATION_NAME), this, [this]{ showWindow(); });
+        _contextMenu->addAction(tr("Open %1 Desktop", "Open Nextcloud main window. Placeholer will be the application name. Please keep it.").arg(APPLICATION_NAME), this, [this]{ showActivitiesWindow(); });
     }
 
     auto pauseAction = _contextMenu->addAction(tr("Pause sync"), this, &Systray::slotPauseAllFolders);
@@ -282,6 +592,7 @@ void Systray::setupContextMenu()
         resumeAction->setVisible(anyPaused);
         resumeAction->setEnabled(anyPaused);
     });
+#endif
 }
 
 void Systray::destroyDialog(QQuickWindow *dialog) const
@@ -393,6 +704,37 @@ void Systray::createResolveConflictsDialog(const OCC::ActivityList &allConflicts
     dialogWindow->requestActivate();
 }
 
+void Systray::createGovernanceLabelsDialog(AccountPtr account, const QString &fileName, const QString &fileId)
+{
+    const auto conflictsDialog = std::make_unique<QQmlComponent>(trayEngine(), QStringLiteral("qrc:/qml/src/gui/GovernanceLabelsDialog.qml"));
+    const QVariantMap initialProperties{
+                                        {"fileName", QVariant::fromValue(fileName)},
+                                        {"account", QVariant::fromValue(account)},
+                                        {"fileId", QVariant::fromValue(fileId)},
+                                        };
+
+    if(conflictsDialog->isError()) {
+        qCWarning(lcSystray) << conflictsDialog->errorString();
+        return;
+    }
+
+    // This call dialog gets deallocated on close conditions
+    // by a call from the QML side to the destroyDialog slot
+    auto dialog = std::unique_ptr<QObject>(conflictsDialog->createWithInitialProperties(initialProperties));
+    if (!dialog) {
+        return;
+    }
+    dialog->setParent(QGuiApplication::instance());
+
+    auto dialogWindow = qobject_cast<QQuickWindow*>(dialog.release());
+    if (!dialogWindow) {
+        return;
+    }
+    dialogWindow->show();
+    dialogWindow->raise();
+    dialogWindow->requestActivate();
+}
+
 void Systray::createEncryptionTokenDiscoveryDialog()
 {
     if (_encryptionTokenDiscoveryDialog) {
@@ -459,14 +801,14 @@ bool Systray::raiseFileDetailDialogs(const QString &localPath)
     return !_fileDetailDialogs.empty();
 }
 
-void Systray::createFileDetailsDialog(const QString &localPath)
+void Systray::createFileDetailsDialog(const QString &localPath, const QString &fileId)
 {
     if (raiseFileDetailDialogs(localPath)) {
         qCDebug(lcSystray) << "Reopening an existing file details dialog for " << localPath;
         return;
     }
 
-    qCDebug(lcSystray) << "Opening new file details dialog for " << localPath;
+    qCDebug(lcSystray).nospace() << "Opening new file details dialog localPath=" << localPath << " fileId=" << fileId;
 
     if (!_trayEngine) {
         qCWarning(lcSystray) << "Could not open file details dialog for" << localPath << "as no tray engine was available";
@@ -477,6 +819,28 @@ void Systray::createFileDetailsDialog(const QString &localPath)
     if (!folder) {
         qCWarning(lcSystray) << "Could not open file details dialog for" << localPath << "no responsible folder found";
         return;
+    }
+
+    const auto relativePath = localPath.mid(folder->cleanPath().length() + 1);
+    auto resolvedFileId = fileId;
+    if (resolvedFileId.isEmpty()) {
+        auto fileRecord = SyncJournalFileRecord{};
+        if (folder->journalDb()->getFileRecord(relativePath, &fileRecord)) {
+            resolvedFileId = QString::fromUtf8(fileRecord.numericFileId());
+        }
+    }
+    const auto remotePath = QDir(folder->remotePath()).filePath(relativePath);
+    qCDebug(lcSystray).nospace() << "Resolved file details file ID for " << localPath << ": " << resolvedFileId;
+
+    const auto unifiedSharingAvailable = folder->accountState()->account()->capabilities().unifiedSharingAvailable();
+    if (unifiedSharingAvailable && !resolvedFileId.isEmpty()) {
+        createUnifiedSharingDialog(folder->accountState()->account(), localPath, resolvedFileId, remotePath);
+        return;
+    }
+
+    if (!unifiedSharingAvailable) {
+        qCWarning(lcSystray) << "Cannot open unified sharing for" << localPath
+                             << "because no server file ID was available; falling back to the existing file details view";
     }
 
     const QVariantMap initialProperties{
@@ -506,9 +870,49 @@ void Systray::createFileDetailsDialog(const QString &localPath)
     }
 }
 
-void Systray::createShareDialog(const QString &localPath)
+void Systray::createUnifiedSharingDialog(const AccountPtr &account, const QString &localPath, const QString &fileId, const QString &remotePath)
 {
-    createFileDetailsDialog(localPath);
+    if (!_trayEngine) {
+        qCWarning(lcSystray) << "Could not open unified sharing dialog for" << localPath << "as no tray engine was available";
+        return;
+    }
+
+    const QVariantMap initialProperties{
+        {"account", QVariant::fromValue(account)},
+        {"localPath", localPath},
+        {"fileId", fileId},
+        {"remotePath", remotePath},
+    };
+
+    QQmlComponent fileDetailsDialog(trayEngine(), "com.nextcloud.desktopclient.sharing"_L1, "ShareDialog"_L1);
+
+    if (fileDetailsDialog.isError()) {
+        qCWarning(lcSystray) << fileDetailsDialog.errorString();
+        return;
+    }
+
+    const auto createdDialog = fileDetailsDialog.createWithInitialProperties(initialProperties);
+    const auto dialog = qobject_cast<QQuickWindow*>(createdDialog);
+
+    if (!dialog) {
+        qCWarning(lcSystray) << "Unified sharing dialog resulted in creation of object that was not a window!";
+        return;
+    }
+
+    _fileDetailDialogs.append(dialog);
+
+#if defined(Q_OS_MACOS)
+    configureMacOSExpandedQuickWindow(dialog);
+#endif
+
+    dialog->show();
+    dialog->raise();
+    dialog->requestActivate();
+}
+
+void Systray::createShareDialog(const QString &localPath, const QString &fileId)
+{
+    createFileDetailsDialog(localPath, fileId);
     Q_EMIT showFileDetailsPage(localPath, FileDetailsPage::Sharing);
 }
 
@@ -528,6 +932,23 @@ void Systray::showFileActionsDialog(const QString &localPath)
 void Systray::slotShowFileProviderFileActionsDialog(const QString &fileId, const QString &localPath, const QString &remoteItemPath, const QString &fileProviderDomainIdentifier)
 {
     createFileProviderFileActionsDialog(fileId, localPath, remoteItemPath, fileProviderDomainIdentifier);
+}
+
+void Systray::slotShowFileProviderUnifiedSharingDialog(const QString &fileId, const QString &localPath, const QString &remoteItemPath, const QString &fileProviderDomainIdentifier)
+{
+    if (raiseFileDetailDialogs(localPath)) {
+        qCDebug(lcSystray) << "Reopening an existing unified sharing dialog for" << localPath;
+        return;
+    }
+
+    const auto accountState = AccountManager::instance()->accountFromFileProviderDomainIdentifier(fileProviderDomainIdentifier);
+    if (!accountState) {
+        qCWarning(lcSystray) << "Could not open unified sharing dialog for" << localPath
+                             << "no account found for domain identifier" << fileProviderDomainIdentifier;
+        return;
+    }
+
+    createUnifiedSharingDialog(accountState->account(), localPath, fileId, remoteItemPath);
 }
 
 void Systray::createFileProviderFileActionsDialog(const QString &fileId, const QString &localPath, const QString &remoteItemPath, const QString &fileProviderDomainIdentifier)
@@ -611,47 +1032,14 @@ void Systray::createFileActionsDialogWithAccountState(const QString &localPath, 
 
 void Systray::presentShareViewInTray(const QString &localPath)
 {
-    const auto folder = FolderMan::instance()->folderForPath(localPath);
-    if (!folder) {
-        qCWarning(lcSystray) << "Could not open file details view in tray for" << localPath << "no responsible folder found";
-        return;
-    }
-    qCDebug(lcSystray) << "Opening file details view in tray for " << localPath;
-
-    Q_EMIT showFileDetails(folder->accountState(), localPath, FileDetailsPage::Sharing);
+    qCDebug(lcSystray) << "Opening file details dialog for " << localPath;
+    createShareDialog(localPath);
 }
 
 void Systray::presentFileActionsViewInSystray(const QString &localPath)
 {
     qCDebug(lcSystray) << "Opening file actions view in tray for " << localPath;
     createFileActionsDialog(localPath);
-}
-
-void Systray::slotCurrentUserChanged()
-{
-    if (_trayEngine) {
-        // Change ActivityModel
-        _trayEngine->rootContext()->setContextProperty("activityModel", UserModel::instance()->currentActivityModel());
-    }
-
-    // Rebuild App list
-    UserAppsModel::instance()->buildAppList();
-}
-
-void Systray::slotUpdateSyncPausedState()
-{
-    const auto folderMap = FolderMan::instance()->map();
-    for (const auto folder : folderMap) {
-        connect(folder, &Folder::syncPausedChanged, this, &Systray::slotUpdateSyncPausedState, Qt::UniqueConnection);
-        if (!folder->syncPaused()) {
-            _syncIsPaused = false;
-            emit syncIsPausedChanged();
-            return;
-        }
-    }
-
-    _syncIsPaused = true;
-    emit syncIsPausedChanged();
 }
 
 void Systray::slotUnpauseAllFolders()
@@ -662,14 +1050,6 @@ void Systray::slotUnpauseAllFolders()
 void Systray::slotPauseAllFolders()
 {
     setPauseOnAllFoldersHelper(true);
-}
-
-void Systray::slotSyncFoldersChanged(const OCC::Folder::Map &folderMap)
-{
-    if (const auto currentAnySyncFolders = !folderMap.isEmpty(); currentAnySyncFolders != _anySyncFolders) {
-        _anySyncFolders = currentAnySyncFolders;
-        emit anySyncFoldersChanged();
-    }
 }
 
 void Systray::setPauseOnAllFoldersHelper(bool pause)
@@ -715,6 +1095,26 @@ bool Systray::useNormalWindow() const
 bool Systray::isOpen() const
 {
     return _isOpen;
+}
+
+bool Systray::isActivitySurfaceVisible() const
+{
+    if (isOpen() || _isTrayContextMenuVisible) {
+        return true;
+    }
+
+    for (auto it = _activitiesWindows.cbegin(); it != _activitiesWindows.cend(); ++it) {
+        if (it.value() && it.value()->isVisible()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void Systray::setTrayContextMenuVisible(const bool visible)
+{
+    _isTrayContextMenuVisible = visible;
 }
 
 bool Systray::enableAddAccount() const
@@ -776,46 +1176,37 @@ void Systray::showTalkMessage(const QString &title, const QString &message, cons
 #endif
 }
 
-bool Systray::syncIsPaused() const
-{
-    return _syncIsPaused;
-}
-
 void Systray::setSyncIsPaused(const bool syncIsPaused)
 {
-    _syncIsPaused = syncIsPaused;
-    if (_syncIsPaused) {
+    if (syncIsPaused) {
         slotPauseAllFolders();
     } else {
         slotUnpauseAllFolders();
     }
-    emit syncIsPausedChanged();
 }
 
-bool Systray::anySyncFolders() const
+Systray::SyncControlState Systray::syncControlState() const
 {
-    return _anySyncFolders;
+    const auto folders = FolderMan::instance()->map();
+    if (folders.isEmpty()) {
+        return SyncControlState::Unavailable;
+    }
+
+    const auto anyPaused = std::any_of(std::cbegin(folders), std::cend(folders), [](const Folder *folder) {
+        return folder->syncPaused();
+    });
+    const auto anyRunning = std::any_of(std::cbegin(folders), std::cend(folders), [](const Folder *folder) {
+        return !folder->syncPaused();
+    });
+    if (anyPaused && anyRunning) {
+        return SyncControlState::PauseAndResume;
+    }
+    return anyPaused ? SyncControlState::Resume : SyncControlState::Pause;
 }
 
 /********************************************************************************************/
 /* Helper functions for cross-platform tray icon position and taskbar orientation detection */
 /********************************************************************************************/
-
-void Systray::positionWindowAtTray(QQuickWindow *window) const
-{
-    if (useNormalWindow()) {
-        return;
-    }
-
-    // need to store the current window size before moving the window to another screen,
-    // otherwise it is being incorrectly resized by the OS or Qt when switching to a screen
-    // with a different DPI setting
-    const auto initialSize = window->size();
-    const auto position = computeWindowPosition(initialSize.width(), initialSize.height());
-    window->setPosition(position);
-    window->setScreen(currentScreen());
-    window->resize(initialSize);
-}
 
 void Systray::positionWindowAtScreenCenter(QQuickWindow *window) const
 {
@@ -945,42 +1336,6 @@ QRect Systray::currentAvailableScreenRect() const
     return screen->availableGeometry();
 }
 
-QPoint Systray::computeWindowReferencePoint() const
-{
-    constexpr auto spacing = 4;
-    const auto trayIconCenter = calcTrayIconCenter();
-    const auto taskbarScreenEdge = taskbarOrientation();
-    const auto screenRect = currentAvailableScreenRect();
-
-    qCDebug(lcSystray) << "screenRect:" << screenRect;
-    qCDebug(lcSystray) << "taskbarScreenEdge:" << taskbarScreenEdge;
-    qCDebug(lcSystray) << "trayIconCenter:" << trayIconCenter;
-
-    switch(taskbarScreenEdge) {
-    case TaskBarPosition::Bottom:
-        return {
-            trayIconCenter.x(),
-            screenRect.bottom() - spacing
-        };
-    case TaskBarPosition::Left:
-        return {
-            screenRect.left() + spacing,
-            trayIconCenter.y()
-        };
-    case TaskBarPosition::Top:
-        return {
-            trayIconCenter.x(),
-            screenRect.top() + spacing
-        };
-    case TaskBarPosition::Right:
-        return {
-            screenRect.right() - spacing,
-            trayIconCenter.y()
-        };
-    }
-    Q_UNREACHABLE();
-}
-
 QPoint Systray::computeNotificationReferencePoint(int spacing, NotificationPosition position) const
 {
     auto trayIconCenter = calcTrayIconCenter();
@@ -1049,38 +1404,6 @@ QRect Systray::computeWindowRect(int spacing, const QPoint &topLeft, const QPoin
     }
 
     return rect.translated(offset);
-}
-
-QPoint Systray::computeWindowPosition(int width, int height) const
-{
-    constexpr auto spacing = 4;
-    const auto referencePoint = computeWindowReferencePoint();
-
-    const auto taskbarScreenEdge = taskbarOrientation();
-    const auto screenRect = currentScreenRect();
-
-    const auto topLeft = [=]() {
-        switch(taskbarScreenEdge) {
-        case TaskBarPosition::Bottom:
-            return referencePoint - QPoint(width / 2, height);
-        case TaskBarPosition::Left:
-            return referencePoint;
-        case TaskBarPosition::Top:
-            return referencePoint - QPoint(width / 2, 0);
-        case TaskBarPosition::Right:
-            return referencePoint - QPoint(width, 0);
-        }
-        Q_UNREACHABLE();
-    }();
-    const auto bottomRight = topLeft + QPoint(width, height);
-    const auto windowRect = computeWindowRect(spacing, topLeft, bottomRight);
-
-    qCDebug(lcSystray) << "taskbarScreenEdge:" << taskbarScreenEdge;
-    qCDebug(lcSystray) << "screenRect:" << screenRect;
-    qCDebug(lcSystray) << "windowRect (reference)" << QRect(topLeft, bottomRight);
-    qCDebug(lcSystray) << "windowRect (adjusted)" << windowRect;
-
-    return windowRect.topLeft();
 }
 
 QPoint Systray::computeNotificationPosition(int width, int height, int spacing, NotificationPosition position) const

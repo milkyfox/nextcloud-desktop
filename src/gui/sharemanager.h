@@ -127,7 +127,7 @@ public:
      */
     [[nodiscard]] static bool isShareTypeUserGroupEmailRoomOrRemote(const ShareType type);
 
-signals:
+Q_SIGNALS:
     void permissionsSet();
     void shareDeleted();
     void serverError(int code, const QString &message);
@@ -135,7 +135,7 @@ signals:
     void hideDownloadSet();
     void passwordSetError(int statusCode, const QString &message);    
 
-public slots:
+public Q_SLOTS:
     /*
      * Deletes a share
      *
@@ -172,12 +172,12 @@ protected:
     Permissions _permissions;
     ShareePtr _shareWith;
 
-protected slots:
+protected Q_SLOTS:
     void slotOcsError(int statusCode, const QString &message);
     void slotPasswordSet(const QJsonDocument &, const QVariant &value);
     void slotSetPasswordError(int statusCode, const QString &message);
 
-private slots:
+private Q_SLOTS:
     void slotDeleted();
     void slotPermissionsSet(const QJsonDocument &, const QVariant &value);
 };
@@ -196,7 +196,6 @@ class LinkShare : public Share
     Q_PROPERTY(QUrl directDownloadLink READ getDirectDownloadLink CONSTANT)
     Q_PROPERTY(bool publicCanUpload READ getPublicUpload CONSTANT)
     Q_PROPERTY(bool publicCanReadDirectory READ getShowFileListing CONSTANT)
-    Q_PROPERTY(QString name READ getName WRITE setName NOTIFY nameSet)
     Q_PROPERTY(QString note READ getNote WRITE setNote NOTIFY noteSet)
     Q_PROPERTY(QString label READ getLabel WRITE setLabel NOTIFY labelSet)
     Q_PROPERTY(bool hideDownload READ getHideDownload WRITE setHideDownload NOTIFY hideDownloadSet)
@@ -210,7 +209,6 @@ public:
         const QString &uidFileOwner,
         const QString &ownerDisplayName,
         const QString &path,
-        const QString &name,
         const QString &token,
         const Permissions permissions,
         bool isPasswordSet,
@@ -239,11 +237,6 @@ public:
      * Whether directory listings are available (READ permission)
      */
     [[nodiscard]] bool getShowFileListing() const;
-
-    /*
-     * Returns the name of the link share. Can be empty.
-     */
-    [[nodiscard]] QString getName() const;
 
     /*
      * Returns the note of the link share.
@@ -276,14 +269,7 @@ public:
     template <typename LinkShareSlot>
     OcsShareJob *createShareJob(const LinkShareSlot slotFunction);
     
-public slots:
-    /*
-     * Set the name of the link share.
-     *
-     * Emits either nameSet() or serverError().
-     */
-    void setName(const QString &name);
-
+public Q_SLOTS:
     /*
      * Set the note of the link share.
      */
@@ -307,21 +293,18 @@ public slots:
      */
     void setHideDownload(const bool hideDownload);
     
-signals:
+Q_SIGNALS:
     void expireDateSet();
     void noteSet();
-    void nameSet();
     void labelSet();
 
-private slots:
+private Q_SLOTS:
     void slotNoteSet(const QJsonDocument &, const QVariant &value);
     void slotExpireDateSet(const QJsonDocument &reply, const QVariant &value);
-    void slotNameSet(const QJsonDocument &, const QVariant &value);
     void slotLabelSet(const QJsonDocument &, const QVariant &value);
     void slotHideDownloadSet(const QJsonDocument &jsonDoc, const QVariant &hideDownload);
 
 private:
-    QString _name;
     QString _token;
     QString _note;
     QDate _expireDate;
@@ -352,16 +335,16 @@ public:
     [[nodiscard]] QString getNote() const;
     [[nodiscard]] QDate getExpireDate() const;
 
-public slots:
+public Q_SLOTS:
     void setNote(const QString &note);
     void setExpireDate(const QDate &date);
 
-signals:
+Q_SIGNALS:
     void noteSet();
     void noteSetError();
     void expireDateSet();
 
-private slots:
+private Q_SLOTS:
      void slotNoteSet(const QJsonDocument &json, const QVariant &note);
      void slotExpireDateSet(const QJsonDocument &reply, const QVariant &value);
 
@@ -451,7 +434,7 @@ public:
      */
     void fetchSharedWithMe(const QString &path);
 
-signals:
+Q_SIGNALS:
     void shareCreated(const OCC::SharePtr &share);
     void linkShareCreated(const QSharedPointer<OCC::LinkShare> &share);
     void sharesFetched(const QList<OCC::SharePtr> &shares);
@@ -466,7 +449,7 @@ signals:
      */
     void linkShareRequiresPassword(const QString &message);
 
-private slots:
+private Q_SLOTS:
     void slotSharesFetched(const QJsonDocument &reply);
     void slotSharedWithMeFetched(const QJsonDocument &reply);
     void slotLinkShareCreated(const QJsonDocument &reply);
@@ -475,10 +458,10 @@ private slots:
     void slotCreateE2eeShareJobFinised(int statusCode, const QString &message);
 
 private:
-    QSharedPointer<LinkShare> parseLinkShare(const QJsonObject &data) const;
-    QSharedPointer<UserGroupShare> parseUserGroupShare(const QJsonObject &data) const;
-    SharePtr parseShare(const QJsonObject &data) const;
-    const QList<OCC::SharePtr> parseShares(const QJsonDocument &reply) const;
+    [[nodiscard]] QSharedPointer<LinkShare> parseLinkShare(const QJsonObject &data) const;
+    [[nodiscard]] QSharedPointer<UserGroupShare> parseUserGroupShare(const QJsonObject &data) const;
+    [[nodiscard]] SharePtr parseShare(const QJsonObject &data) const;
+    [[nodiscard]] const QList<OCC::SharePtr> parseShares(const QJsonDocument &reply) const;
 
     AccountPtr _account;
 };

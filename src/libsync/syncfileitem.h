@@ -163,15 +163,19 @@ public:
             prefixL++;
         }
 
-        if (prefixL == d2.size())
+        if (prefixL == d2.size()) {
             return false;
-        if (prefixL == d1.size())
+        }
+        if (prefixL == d1.size()) {
             return true;
+        }
 
-        if (data1[prefixL] == '/')
+        if (data1[prefixL] == '/') {
             return true;
-        if (data2[prefixL] == '/')
+        }
+        if (data2[prefixL] == '/') {
             return false;
+        }
 
         return data1[prefixL] < data2[prefixL];
     }
@@ -226,6 +230,8 @@ public:
     [[nodiscard]] bool isEncrypted() const { return _e2eEncryptionStatus != EncryptionStatus::NotEncrypted; }
 
     void updateLockStateFromDbRecord(const SyncJournalFileRecord &dbRecord);
+
+    [[nodiscard]] static SyncJournalFileRecord fromSyncFileItem(const SyncFileItem &syncFile);
 
     // Variables useful for everybody
 
@@ -346,6 +352,11 @@ public:
         static constexpr char usedBytesC[] = "quota-used-bytes";
     };
     FolderQuota _folderQuota;
+
+    [[nodiscard]] QString localName() const
+    {
+        return _file;
+    }
 };
 
 inline bool operator<(const SyncFileItemPtr &item1, const SyncFileItemPtr &item2)

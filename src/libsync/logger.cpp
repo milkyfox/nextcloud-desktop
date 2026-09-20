@@ -25,6 +25,8 @@
 #include <io.h> // for stdout
 #endif
 
+using namespace Qt::StringLiterals;
+
 namespace {
 
 constexpr int CrashLogSize = 20;
@@ -37,8 +39,9 @@ static bool compressLog(const QString &originalName, const QString &targetName)
 {
 #ifdef ZLIB_FOUND
     QFile original(originalName);
-    if (!original.open(QIODevice::ReadOnly))
+    if (!original.open(QIODevice::ReadOnly)) {
         return false;
+    }
     auto compressed = gzopen(targetName.toUtf8(), "wb");
     if (!compressed) {
         return false;
@@ -97,12 +100,12 @@ Logger::~Logger()
 
 void Logger::postGuiLog(const QString &title, const QString &message)
 {
-    emit guiLog(title, message);
+    Q_EMIT guiLog(title, message);
 }
 
 void Logger::postGuiMessage(const QString &title, const QString &message)
 {
-    emit guiMessage(title, message);
+    Q_EMIT guiMessage(title, message);
 }
 
 bool Logger::isLoggingToFile() const
@@ -166,7 +169,7 @@ void Logger::doLog(QtMsgType type, const QMessageLogContext &ctx, const QString 
             s_originalMessageHandler(type, ctx, message);
         }
     }
-    emit logWindowLog(msg);
+    Q_EMIT logWindowLog(msg);
 }
 
 void Logger::closeNoLock()
@@ -219,7 +222,7 @@ void Logger::setLogFlush(bool flush)
 
 void Logger::setLogDebug(bool debug)
 {
-    const QSet<QString> rules = {debug ? QStringLiteral("nextcloud.*.debug=true") : QString()};
+    const auto rules = debug ? QSet<QString>{u"nextcloud.*.debug=true"_s, u"sync.vfs.openvfs=true"_s} : QSet<QString>{};
     if (debug) {
         addLogRule(rules);
     } else {
@@ -253,8 +256,9 @@ void Logger::setupTemporaryFolderLogDir()
 
 void Logger::disableTemporaryFolderLogDir()
 {
-    if (!_temporaryFolderLogDir)
+    if (!_temporaryFolderLogDir) {
         return;
+    }
 
     enterNextLogFile("nextcloud.log", LogType::Log);
     setLogDir(QString());
@@ -339,8 +343,9 @@ void Logger::enterNextLogFileNoLock(const QString &baseFileName, LogType type)
         // Compress the previous log file. On a restart this can be the most recent
         // log file.
         auto logToCompress = previousLog;
-        if (logToCompress.isEmpty() && files.size() > 0 && !files.last().endsWith(".gz"))
+        if (logToCompress.isEmpty() && files.size() > 0 && !files.last().endsWith(".gz")) {
             logToCompress = dir.absoluteFilePath(files.last());
+        }
         if (!logToCompress.isEmpty()) {
             QString compressedName = logToCompress + ".gz";
             if (compressLog(logToCompress, compressedName)) {

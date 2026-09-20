@@ -98,8 +98,9 @@ SyncJournalFileRecord SyncFileItem::toSyncJournalFileRecordWithInode(const QStri
         rec._type = ItemTypeFile;
         qCInfo(lcFileItem) << "Changing item type from ItemTypeVirtualFileDownload to normal file to avoid wrong record type in database" << rec._path;
     }
-    if (rec._type == ItemTypeVirtualFileDehydration)
+    if (rec._type == ItemTypeVirtualFileDehydration) {
         rec._type = ItemTypeVirtualFile;
+    }
 
     rec._etag = _etag;
     rec._fileId = _fileId;
@@ -268,6 +269,41 @@ void SyncFileItem::updateLockStateFromDbRecord(const SyncJournalFileRecord &dbRe
     _lockTime = dbRecord._lockstate._lockTime;
     _lockTimeout = dbRecord._lockstate._lockTimeout;
     _lockToken = dbRecord._lockstate._lockToken;
+}
+
+SyncJournalFileRecord SyncFileItem::fromSyncFileItem(const SyncFileItem &syncFile)
+{
+    SyncJournalFileRecord rec(syncFile.destination().toUtf8(), {}, {}, syncFile._type, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});
+    rec._modtime = syncFile._modtime;
+    rec._type = syncFile._type;
+
+    // Some types should never be written to the database when propagation completes
+    switch (syncFile._type) {
+    case CSyncEnums::ItemTypeVirtualFileDownload:
+        rec._type = ItemTypeFile;
+        break;
+    case CSyncEnums::ItemTypeVirtualFileDehydration:
+        rec._type = ItemTypeVirtualFile;
+        break;
+    case CSyncEnums::ItemTypeFile:
+    case CSyncEnums::ItemTypeSoftLink:
+    case CSyncEnums::ItemTypeDirectory:
+    case CSyncEnums::ItemTypeSkip:
+    case CSyncEnums::ItemTypeVirtualFile:
+    case CSyncEnums::ItemTypeVirtualDirectory:
+        break;
+    }
+
+    rec._etag = syncFile._etag;
+    rec._fileId = syncFile._fileId;
+    rec._fileSize = syncFile._size;
+    rec._inode = syncFile._inode;
+    rec._remotePerm = syncFile._remotePerm;
+    rec._serverHasIgnoredFiles = syncFile._serverHasIgnoredFiles;
+    rec._checksumHeader = syncFile._checksumHeader;
+    //Q_ASSERT(rec.validateRecord());
+
+    return rec;
 }
 
 }

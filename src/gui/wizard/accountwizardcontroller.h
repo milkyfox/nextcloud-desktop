@@ -14,6 +14,7 @@
 #include <QSslKey>
 #include <QUrl>
 
+#include <functional>
 #include <memory>
 
 #include "accountfwd.h"
@@ -61,6 +62,7 @@ class AccountWizardController : public QObject
     Q_PROPERTY(SyncMode syncMode READ syncMode NOTIFY syncModeChanged)
     Q_PROPERTY(bool canFinish READ canFinish NOTIFY canFinishChanged)
     Q_PROPERTY(bool canUseVirtualFiles READ canUseVirtualFiles CONSTANT)
+    Q_PROPERTY(bool isUsingFileProvider READ isUsingFileProvider CONSTANT)
     Q_PROPERTY(bool canUseClassicSync READ canUseClassicSync CONSTANT)
     Q_PROPERTY(bool needsSyncOptions READ needsSyncOptions NOTIFY needsSyncOptionsChanged)
     Q_PROPERTY(bool canSkipFolderConfiguration READ canSkipFolderConfiguration CONSTANT)
@@ -120,6 +122,7 @@ public:
     [[nodiscard]] QStringList overrideServerNames() const;
     [[nodiscard]] int overrideServerIndex() const;
     void setOverrideServerIndex(int index);
+    [[nodiscard]] bool setServerUrlForLoginFlow(const QUrl &serverUrl);
     [[nodiscard]] bool busy() const;
     [[nodiscard]] bool authPolling() const;
     [[nodiscard]] QString errorText() const;
@@ -137,6 +140,7 @@ public:
     [[nodiscard]] SyncMode syncMode() const;
     [[nodiscard]] bool canFinish() const;
     [[nodiscard]] bool canUseVirtualFiles() const;
+    [[nodiscard]] bool isUsingFileProvider() const;
     [[nodiscard]] bool canUseClassicSync() const;
     [[nodiscard]] bool needsSyncOptions() const;
     [[nodiscard]] bool canSkipFolderConfiguration() const;
@@ -204,7 +208,7 @@ public:
     Q_INVOKABLE void retrySecureConnectionWithoutTls();
     Q_INVOKABLE void useClientCertificateForSecureConnection();
 
-signals:
+Q_SIGNALS:
     void currentStepChanged();
     void serverUrlChanged();
     void serverUrlEditableChanged();
@@ -238,7 +242,7 @@ signals:
     void secureConnectionFailed(const QString &host, bool retryHttpOnly);
     void clientCertificateChanged();
 
-private slots:
+private Q_SLOTS:
     void slotSystemProxyLookupDone(const QNetworkProxy &proxy);
     void slotFindServer();
     void slotFindServerBehindRedirect();
@@ -253,6 +257,10 @@ private slots:
     void slotCreateRemoteFolderFinished(QNetworkReply *reply);
 
 private:
+    using LocalNetworkPermissionCheck = std::function<void(const QUrl &, QObject *, std::function<void(bool)>)>;
+
+    friend class AccountWizardControllerTestAccess;
+
     void initialiseAccount();
     void ensureAccount();
     void initialiseOverrideServerChoices();
@@ -295,9 +303,11 @@ private:
     void emitProxySettingsChangedIfNeeded(bool previousValidity, bool previousLocalhostWarning);
     void discardFlow2Auth();
     [[nodiscard]] bool checkDowngradeAdvised(QNetworkReply *reply) const;
-    [[nodiscard]] bool handleSecureConnectionFailure(QNetworkReply *reply, bool retryHttpOnly);
+    void handleFailedServerConnection(const QUrl &url, bool retryHttpOnly);
+    void handleSecureConnectionFailure(QNetworkReply *reply, bool retryHttpOnly);
 
     AccountPtr _account;
+    LocalNetworkPermissionCheck _localNetworkPermissionCheck;
     std::unique_ptr<Flow2Auth> _flow2Auth;
     QPointer<SelectiveSyncDialog> _selectiveSyncDialog;
     enum class ProxyAuthentication {

@@ -70,18 +70,6 @@ public:
     void setPassword(const QString &shareId, const QString &password);
 
     /**
-     * Set the share to be public upload
-     *
-     * @param publicUpload Set or remove public upload
-     */
-    void setPublicUpload(const QString &shareId, bool publicUpload);
-
-    /**
-     * Change the name of a share
-     */
-    void setName(const QString &shareId, const QString &name);
-
-    /**
      * Set the permissions
      *
      * @param permissions
@@ -133,7 +121,7 @@ public:
 
     static const QString _pathForSharesRequest;
 
-signals:
+Q_SIGNALS:
     /**
      * Result of the OCS request
      * The value parameter is only set if this was a put request.
@@ -145,7 +133,7 @@ signals:
      */
     void shareJobFinished(QJsonDocument reply, QVariant value);
 
-private slots:
+private Q_SLOTS:
     void jobDone(QJsonDocument reply);
 
 private:
