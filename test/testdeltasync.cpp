@@ -19,7 +19,7 @@ class TestDeltaSync : public QObject
 {
     Q_OBJECT
 
-private slots:
+private Q_SLOTS:
     void testAdler32Known()
     {
         // RFC 1950 example: adler32("Wikipedia") == 0x11E60398
