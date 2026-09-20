@@ -28,10 +28,10 @@ public:
 
     void doStartUpload() override;
 
-public slots:
+public Q_SLOTS:
     void abort(PropagatorJob::AbortType abortType) override;
 
-private slots:
+private Q_SLOTS:
     void slotStatusCheckFinished();
     void slotBlockMapFetched();
     void slotBlockUploaded();
