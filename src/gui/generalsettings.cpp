@@ -64,7 +64,11 @@ GeneralSettings::GeneralSettings(QWidget *parent)
     loadMiscSettings();
 
     connect(_ui->monoIconsCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
-    connect(_ui->deltaSyncCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
+    connect(_ui->deltaSyncCheckBox, &QAbstractButton::toggled, this, [this](bool checked) {
+        _ui->deltaSyncCdcCheckBox->setEnabled(checked);
+        saveMiscSettings();
+    });
+    connect(_ui->deltaSyncCdcCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
 
     // accountAdded means the wizard was finished and the wizard might change some options.
     connect(AccountManager::instance(), &AccountManager::accountAdded, this, &GeneralSettings::loadMiscSettings);
@@ -129,6 +133,8 @@ void GeneralSettings::loadMiscSettings()
     _ui->quotaWarningNotificationsCheckBox->setEnabled(cfgFile.optionalServerNotifications());
     _ui->quotaWarningNotificationsCheckBox->setChecked(cfgFile.showQuotaWarningNotifications());
     _ui->deltaSyncCheckBox->setChecked(cfgFile.deltaSyncEnabled());
+    _ui->deltaSyncCdcCheckBox->setEnabled(cfgFile.deltaSyncEnabled());
+    _ui->deltaSyncCdcCheckBox->setChecked(cfgFile.deltaSyncCdcEnabled());
 
 #if defined(BUILD_FILE_PROVIDER_MODULE)
     if (Mac::FileProvider::available()) {
@@ -152,6 +158,8 @@ void GeneralSettings::saveMiscSettings()
 
     ConfigFile().setMonoIcons(useMonoIcons);
     ConfigFile().setDeltaSyncEnabled(_ui->deltaSyncCheckBox->isChecked());
+    ConfigFile().setDeltaSyncCdcEnabled(_ui->deltaSyncCdcCheckBox->isChecked());
+    _ui->deltaSyncCdcCheckBox->setEnabled(_ui->deltaSyncCheckBox->isChecked());
 }
 
 void GeneralSettings::slotToggleLaunchOnStartup(bool enable)

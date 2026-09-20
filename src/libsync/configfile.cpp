@@ -1092,6 +1092,7 @@ void ConfigFile::setMoveToTrash(bool isChecked)
 }
 
 static constexpr char deltaSyncEnabledC[] = "deltaSyncEnabled";
+static constexpr char deltaSyncCdcEnabledC[] = "deltaSyncCdcEnabled";
 
 bool ConfigFile::deltaSyncEnabled() const
 {
@@ -1101,6 +1102,16 @@ bool ConfigFile::deltaSyncEnabled() const
 void ConfigFile::setDeltaSyncEnabled(bool enabled)
 {
     setValue(deltaSyncEnabledC, enabled);
+}
+
+bool ConfigFile::deltaSyncCdcEnabled() const
+{
+    return getValue(deltaSyncCdcEnabledC, QString(), true).toBool();
+}
+
+void ConfigFile::setDeltaSyncCdcEnabled(bool enabled)
+{
+    setValue(deltaSyncCdcEnabledC, enabled);
 }
 
 bool ConfigFile::showMainDialogAsNormalWindow() const {
