@@ -151,7 +151,9 @@ void GETFileJob::slotMetaDataChanged()
 {
     // For some reason setting the read buffer in GETFileJob::start doesn't seem to go
     // through the HTTP layer thread(?)
-    reply()->setReadBufferSize(16 * 1024);
+    // When not bandwidth limited a larger buffer prevents the socket from stalling
+    // on the first body frame before _saveBodyToFile was set.
+    reply()->setReadBufferSize(_bandwidthLimited ? 16 * 1024 : 512 * 1024);
 
     int httpStatus = reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
@@ -245,6 +247,13 @@ void GETFileJob::slotMetaDataChanged()
     }
 
     _saveBodyToFile = true;
+
+    // If body bytes already arrived before the metadata was processed, the early
+    // readyRead drained nothing because _saveBodyToFile was still false and the
+    // socket buffer is now full - no further readyRead will fire. Drain them now.
+    if (reply()->bytesAvailable() > 0) {
+        QMetaObject::invokeMethod(this, "slotReadyRead", Qt::QueuedConnection);
+    }
 }
 
 void GETFileJob::setBandwidthManager(BandwidthManager *bwm)
