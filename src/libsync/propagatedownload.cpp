@@ -140,6 +140,7 @@ void GETFileJob::start()
 void GETFileJob::newReplyHook(QNetworkReply *reply)
 {
     reply->setReadBufferSize(16 * 1024); // keep low so we can easier limit the bandwidth
+    qCDebug(lcGetJob) << "DIAG newReplyHook for" << reply->url();
 
     connect(reply, &QNetworkReply::metaDataChanged, this, &GETFileJob::slotMetaDataChanged);
     connect(reply, &QIODevice::readyRead, this, &GETFileJob::slotReadyRead);
@@ -149,6 +150,8 @@ void GETFileJob::newReplyHook(QNetworkReply *reply)
 
 void GETFileJob::slotMetaDataChanged()
 {
+    qCDebug(lcGetJob) << "DIAG slotMetaDataChanged entry httpStatus" << reply()->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()
+                     << "err" << reply()->error() << "bytesAvail" << reply()->bytesAvailable();
     // For some reason setting the read buffer in GETFileJob::start doesn't seem to go
     // through the HTTP layer thread(?)
     // When not bandwidth limited a larger buffer prevents the socket from stalling
@@ -247,11 +250,13 @@ void GETFileJob::slotMetaDataChanged()
     }
 
     _saveBodyToFile = true;
+    qCDebug(lcGetJob) << "DIAG slotMetaDataChanged end saveBodyToFile=true bytesAvail" << reply()->bytesAvailable();
 
     // If body bytes already arrived before the metadata was processed, the early
     // readyRead drained nothing because _saveBodyToFile was still false and the
     // socket buffer is now full - no further readyRead will fire. Drain them now.
     if (reply()->bytesAvailable() > 0) {
+        qCDebug(lcGetJob) << "DIAG wake slotReadyRead";
         QMetaObject::invokeMethod(this, "slotReadyRead", Qt::QueuedConnection);
     }
 }
@@ -298,9 +303,13 @@ void GETFileJob::slotReadyRead()
     if (!reply()) {
         return;
     }
+    qCDebug(lcGetJob) << "DIAG slotReadyRead entry bytesAvail" << reply()->bytesAvailable()
+                     << "saveBody" << _saveBodyToFile << "finished" << reply()->isFinished()
+                     << "choked" << _bandwidthChoked << "limited" << _bandwidthLimited << "quota" << _bandwidthQuota;
     int bufferSize = qMin(1024 * 8ll, reply()->bytesAvailable());
     QByteArray buffer(bufferSize, Qt::Uninitialized);
 
+    qint64 drainedTotal = 0;
     while (reply()->bytesAvailable() > 0 && _saveBodyToFile) {
         if (_bandwidthChoked) {
             qCWarning(lcGetJob) << "Download choked";
@@ -324,6 +333,7 @@ void GETFileJob::slotReadyRead()
             reply()->abort();
             return;
         }
+        drainedTotal += readBytes;
 
         const qint64 writtenBytes = writeToDevice(buffer.left(readBytes));
         if (writtenBytes != readBytes) {
@@ -334,6 +344,7 @@ void GETFileJob::slotReadyRead()
             return;
         }
     }
+    qCDebug(lcGetJob) << "DIAG slotReadyRead drained" << drainedTotal << "remaining" << reply()->bytesAvailable();
 
     if (reply()->isFinished() && (reply()->bytesAvailable() == 0 || !_saveBodyToFile)) {
         qCDebug(lcGetJob) << "Get file job finished bytesAvailable/_saveBodyToFile:" << reply()->bytesAvailable() << "/" << _saveBodyToFile ;
