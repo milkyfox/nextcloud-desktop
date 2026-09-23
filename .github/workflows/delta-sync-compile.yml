@@ -88,6 +88,39 @@ jobs:
           craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|master|"
           craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|master|"
           craft craft
+
+          # libp11 0.4.20 ships src/p11_ver.h, which its libp11.h includes, but the
+          # upstream blueprint (desktop-client-blueprints@master) only installs
+          # libp11.h and p11_err.h, so MSVC fails with C1083 'p11_ver.h' not found.
+          # Patch the checked-out blueprint in place and build the dependencies
+          # afterwards so the header gets installed. Guarded by os.path.exists, so
+          # older libp11 versions that ship no p11_ver.h keep working. This is
+          # best-effort: if the layout changes we warn and let the real build error
+          # speak for itself instead of adding a new failure mode.
+          $bp = Get-ChildItem -Recurse -Path "${{ github.workspace }}/${{ env.CRAFT_TARGET }}" -Filter "libp11.py" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "blueprints" } | Select-Object -First 1
+          if (-not $bp) {
+            Write-Warning "libp11.py blueprint not found under ${{ env.CRAFT_TARGET }}; skipping p11_ver.h patch"
+          } elseif ((Get-Content $bp.FullName -Raw) -notmatch "p11_ver\.h") {
+            $content = Get-Content $bp.FullName -Raw
+            $anchor = "    def install(self):"
+            if ($content -notmatch [regex]::Escape($anchor)) {
+              Write-Warning "install() anchor not found in $($bp.FullName); skipping p11_ver.h patch"
+            } else {
+              $patch = @(
+                $anchor,
+                '        # libp11 >= 0.4.20 ships this version header; libp11.h includes it.',
+                '        p11ver = os.path.join(self.sourceDir(), "src/p11_ver.h")',
+                '        if os.path.exists(p11ver):',
+                '            utils.copyFile(p11ver, os.path.join(self.installDir(), "include/p11_ver.h"), linkOnly=False)'
+              ) -join "`n"
+              Set-Content -Path $bp.FullName -Value $content.Replace($anchor, $patch) -NoNewline
+              Write-Host "Patched $($bp.FullName): install src/p11_ver.h when present"
+            }
+          } else {
+            Write-Host "libp11 blueprint already installs p11_ver.h"
+          }
+
           craft --install-deps nextcloud-client
 
       - name: Compile
