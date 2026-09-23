@@ -121,6 +121,47 @@ jobs:
             Write-Host "libp11 blueprint already installs p11_ver.h"
           }
 
+          # The upstream nextcloud-client recipe defines no NSIS sections, so Craft's NSIS
+          # template (which only calls CreateShortCut from a script-provided section)
+          # produces an installer with no Start Menu shortcut at all. Add the same section
+          # the KDE blueprints use - plain CreateShortCut via the SnoreShortcut macro
+          # (SnoreToast is used only when it is part of the package) - plus the matching
+          # uninstaller section.
+          $recipe = Get-ChildItem -Recurse -Path "${{ github.workspace }}/${{ env.CRAFT_TARGET }}" -Filter "nextcloud-client.py" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "blueprints" } | Select-Object -First 1
+          if (-not $recipe) {
+            Write-Warning "nextcloud-client.py blueprint not found; skipping shortcut patch"
+          } elseif ((Get-Content $recipe.FullName -Raw) -notmatch "AppUserModelID") {
+            $content = Get-Content $recipe.FullName -Raw
+            $anchor = '        self.applicationExecutable = "nextcloud"'
+            if ($content -notmatch [regex]::Escape($anchor)) {
+              Write-Warning "recipe anchor not found in $($recipe.FullName); skipping shortcut patch"
+            } else {
+              $insert = @(
+                '        # Windows shortcuts: the upstream recipe defines no NSIS sections, so Craft''s',
+                '        # NSIS template ships without any shortcut. Mirrors the KDE Connect pattern.',
+                '        self.defines["AppUserModelID"] = "com.nextcloud.desktopclient"',
+                '        self.defines["sections"] = r"""',
+                '            Section "@{productname}"',
+                '                SectionIn 1',
+                '                !insertmacro MUI_STARTMENU_WRITE_BEGIN Application',
+                '                    !insertmacro SnoreShortcut "$SMPROGRAMS\\@{productname}.lnk" "$INSTDIR\\bin\\nextcloud.exe" "@{AppUserModelID}"',
+                '                !insertmacro MUI_STARTMENU_WRITE_END',
+                '            SectionEnd',
+                '            """',
+                '        self.defines["un_sections"] = r"""',
+                '            Section "Un.Remove Shortcuts"',
+                '                Delete "$SMPROGRAMS\\@{productname}.lnk"',
+                '            SectionEnd',
+                '            """'
+              ) -join "`n"
+              Set-Content -Path $recipe.FullName -Value $content.Replace($anchor, $anchor + "`n" + $insert) -NoNewline
+              Write-Host "Patched $($recipe.FullName): Start Menu shortcut section"
+            }
+          } else {
+            Write-Host "nextcloud-client recipe already defines shortcuts"
+          }
+
           craft --install-deps nextcloud-client
 
       - name: Compile
