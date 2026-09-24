@@ -556,6 +556,15 @@ void PropagateUploadFileDelta::slotBlockUploaded()
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
         slotJobDestroyed(job);
         job->deleteLater();
+        if (DeltaSyncUtils::isTransientUploadFailure(httpCode, reply->error() != QNetworkReply::NoError)
+            && ConfigFile().deltaSyncRetryBeforeFallback()) {
+            // Keep the already staged chunks: the next sync run retries the delta
+            // upload, which commits atomically, instead of replacing the target
+            // file in place through the full-upload fallback.
+            qCInfo(lcPropagateUploadDelta) << "Transient block/chunk upload failure, HTTP" << httpCode << "- retrying on a later sync run";
+            done(SyncFileItem::SoftError, tr("Delta sync upload failed temporarily; it will be retried."));
+            return;
+        }
         qCWarning(lcPropagateUploadDelta) << "Block/chunk upload failed, HTTP" << httpCode;
         fallbackToNormalUpload();
         return;
@@ -627,6 +636,16 @@ void PropagateUploadFileDelta::slotFinalizeFinished()
     if (reply->error() != QNetworkReply::NoError || httpCode != 200) {
         slotJobDestroyed(job);
         job->deleteLater();
+        if (DeltaSyncUtils::isTransientUploadFailure(httpCode, reply->error() != QNetworkReply::NoError)
+            && ConfigFile().deltaSyncRetryBeforeFallback()) {
+            // The staged chunks stay in place, so the next sync run only has to
+            // finalize again. Retrying the delta keeps the atomic commit instead of
+            // falling back to a full upload that writes the target non-atomically
+            // on servers with server-side encryption.
+            qCInfo(lcPropagateUploadDelta) << "Transient finalize failure, HTTP" << httpCode << "- retrying on a later sync run";
+            done(SyncFileItem::SoftError, tr("Delta sync finalize failed temporarily; it will be retried."));
+            return;
+        }
         qCWarning(lcPropagateUploadDelta) << "Finalize failed, HTTP" << httpCode;
         fallbackToNormalUpload();
         return;

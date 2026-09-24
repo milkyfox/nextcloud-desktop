@@ -79,5 +79,14 @@ OWNCLOUDSYNC_EXPORT FastCdcMap parseServerFastCdcMap(const QByteArray &json);
 OWNCLOUDSYNC_EXPORT QVector<int> findMissingCdcChunks(const FastCdcMap &local,
                                                      const QSet<QByteArray> &remoteHashes);
 
+/// Whether a delta upload or finalize HTTP failure is worth retrying later rather
+/// than immediately falling back to a full upload.
+///
+/// A full-upload fallback on a server with server-side encryption can replace the
+/// target file in place while the data is still streaming, so a transient server
+/// or network failure must not trigger it. Non-transient answers, for example a
+/// 404 when the delta server app is not installed, keep the graceful fallback.
+OWNCLOUDSYNC_EXPORT bool isTransientUploadFailure(int httpCode, bool networkError);
+
 } // namespace DeltaSyncUtils
 } // namespace OCC

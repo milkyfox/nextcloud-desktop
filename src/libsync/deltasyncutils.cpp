@@ -265,5 +265,15 @@ QVector<int> findMissingCdcChunks(const FastCdcMap &local, const QSet<QByteArray
     return missing;
 }
 
+bool isTransientUploadFailure(int httpCode, bool networkError)
+{
+    if (networkError || httpCode == 0) {
+        return true;
+    }
+    // 5xx: the server failed or is temporarily unavailable, for example a worker
+    // killed during finalize assembly, and the same request can succeed later.
+    return httpCode >= 500;
+}
+
 } // namespace DeltaSyncUtils
 } // namespace OCC

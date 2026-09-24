@@ -203,6 +203,24 @@ private Q_SLOTS:
         QCOMPARE(map.signatures[0].weakHash, static_cast<quint32>(12345));
         QCOMPARE(map.signatures[1].strongHash, QByteArray("ccdd"));
     }
+
+    void testTransientUploadFailureClassification()
+    {
+        // Network errors and 5xx are retried on a later sync run instead of falling
+        // back to a full upload, which can write the target file non-atomically.
+        QVERIFY(DeltaSyncUtils::isTransientUploadFailure(0, false));
+        QVERIFY(DeltaSyncUtils::isTransientUploadFailure(500, false));
+        QVERIFY(DeltaSyncUtils::isTransientUploadFailure(503, false));
+        QVERIFY(DeltaSyncUtils::isTransientUploadFailure(504, false));
+        QVERIFY(DeltaSyncUtils::isTransientUploadFailure(200, true));
+
+        // Non-transient answers keep the graceful fallback to a full upload.
+        QVERIFY(!DeltaSyncUtils::isTransientUploadFailure(400, false));
+        QVERIFY(!DeltaSyncUtils::isTransientUploadFailure(401, false));
+        QVERIFY(!DeltaSyncUtils::isTransientUploadFailure(404, false));
+        QVERIFY(!DeltaSyncUtils::isTransientUploadFailure(412, false));
+        QVERIFY(!DeltaSyncUtils::isTransientUploadFailure(423, false));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestDeltaSync)

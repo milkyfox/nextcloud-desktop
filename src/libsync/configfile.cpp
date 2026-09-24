@@ -1093,10 +1093,16 @@ void ConfigFile::setMoveToTrash(bool isChecked)
 
 static constexpr char deltaSyncEnabledC[] = "deltaSyncEnabled";
 static constexpr char deltaSyncCdcEnabledC[] = "deltaSyncCdcEnabled";
+static constexpr char deltaSyncRetryBeforeFallbackC[] = "deltaSyncRetryBeforeFallback";
 
 bool ConfigFile::deltaSyncEnabled() const
 {
     return getValue(deltaSyncEnabledC, QString(), true).toBool();
+}
+
+bool ConfigFile::deltaSyncRetryBeforeFallback() const
+{
+    return getValue(deltaSyncRetryBeforeFallbackC, QString(), true).toBool();
 }
 
 void ConfigFile::setDeltaSyncEnabled(bool enabled)

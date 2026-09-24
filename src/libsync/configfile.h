@@ -156,6 +156,16 @@ public:
      *  Requires the crispcloud_delta server app to be installed.
      *  When enabled, only changed 4 MB blocks are uploaded instead of full files. */
     [[nodiscard]] bool deltaSyncEnabled() const;
+
+    /**
+     * Whether a transient delta sync failure is retried on a later sync run
+     * instead of falling back to a full upload immediately. Defaults to true.
+     *
+     * A fallback upload on a server with server-side encryption can replace the
+     * target file in place while the data is still streaming, so retrying the
+     * atomic delta path first avoids exposing a partially written file.
+     */
+    [[nodiscard]] bool deltaSyncRetryBeforeFallback() const;
     void setDeltaSyncEnabled(bool enabled);
 
     /** Whether FastCDC (Content-Defined Chunking) is enabled for delta sync.
