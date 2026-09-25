@@ -113,6 +113,39 @@
        </layout>
       </item>
       <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_deltasync_retry">
+        <item>
+         <spacer name="horizontalSpacer_deltasync_retry">
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="sizeType">
+           <enum>QSizePolicy::Policy::Fixed</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>0</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="deltaSyncRetryCheckBox">
+          <property name="toolTip">
+           <string>When a transient delta sync failure occurs, keep the already uploaded blocks and retry the delta upload on a later sync run instead of falling back to a full upload immediately. A fallback upload can replace the file on the server while it is still being written.</string>
+          </property>
+          <property name="text">
+           <string>Retry delta sync before falling back to a &amp;full upload</string>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
        <widget class="QFrame" name="startupSeparator">
         <property name="frameShape">
          <enum>QFrame::Shape::HLine</enum>

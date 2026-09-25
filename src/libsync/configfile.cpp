@@ -1105,6 +1105,11 @@ bool ConfigFile::deltaSyncRetryBeforeFallback() const
     return getValue(deltaSyncRetryBeforeFallbackC, QString(), true).toBool();
 }
 
+void ConfigFile::setDeltaSyncRetryBeforeFallback(bool enabled)
+{
+    setValue(deltaSyncRetryBeforeFallbackC, enabled);
+}
+
 void ConfigFile::setDeltaSyncEnabled(bool enabled)
 {
     setValue(deltaSyncEnabledC, enabled);

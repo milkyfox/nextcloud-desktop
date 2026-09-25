@@ -66,9 +66,11 @@ GeneralSettings::GeneralSettings(QWidget *parent)
     connect(_ui->monoIconsCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
     connect(_ui->deltaSyncCheckBox, &QAbstractButton::toggled, this, [this](bool checked) {
         _ui->deltaSyncCdcCheckBox->setEnabled(checked);
+        _ui->deltaSyncRetryCheckBox->setEnabled(checked);
         saveMiscSettings();
     });
     connect(_ui->deltaSyncCdcCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
+    connect(_ui->deltaSyncRetryCheckBox, &QAbstractButton::toggled, this, &GeneralSettings::saveMiscSettings);
 
     // accountAdded means the wizard was finished and the wizard might change some options.
     connect(AccountManager::instance(), &AccountManager::accountAdded, this, &GeneralSettings::loadMiscSettings);
@@ -135,6 +137,8 @@ void GeneralSettings::loadMiscSettings()
     _ui->deltaSyncCheckBox->setChecked(cfgFile.deltaSyncEnabled());
     _ui->deltaSyncCdcCheckBox->setEnabled(cfgFile.deltaSyncEnabled());
     _ui->deltaSyncCdcCheckBox->setChecked(cfgFile.deltaSyncCdcEnabled());
+    _ui->deltaSyncRetryCheckBox->setEnabled(cfgFile.deltaSyncEnabled());
+    _ui->deltaSyncRetryCheckBox->setChecked(cfgFile.deltaSyncRetryBeforeFallback());
 
 #if defined(BUILD_FILE_PROVIDER_MODULE)
     if (Mac::FileProvider::available()) {
@@ -159,7 +163,9 @@ void GeneralSettings::saveMiscSettings()
     ConfigFile().setMonoIcons(useMonoIcons);
     ConfigFile().setDeltaSyncEnabled(_ui->deltaSyncCheckBox->isChecked());
     ConfigFile().setDeltaSyncCdcEnabled(_ui->deltaSyncCdcCheckBox->isChecked());
+    ConfigFile().setDeltaSyncRetryBeforeFallback(_ui->deltaSyncRetryCheckBox->isChecked());
     _ui->deltaSyncCdcCheckBox->setEnabled(_ui->deltaSyncCheckBox->isChecked());
+    _ui->deltaSyncRetryCheckBox->setEnabled(_ui->deltaSyncCheckBox->isChecked());
 }
 
 void GeneralSettings::slotToggleLaunchOnStartup(bool enable)

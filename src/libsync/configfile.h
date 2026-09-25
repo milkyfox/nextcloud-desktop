@@ -166,6 +166,7 @@ public:
      * atomic delta path first avoids exposing a partially written file.
      */
     [[nodiscard]] bool deltaSyncRetryBeforeFallback() const;
+    void setDeltaSyncRetryBeforeFallback(bool enabled);
     void setDeltaSyncEnabled(bool enabled);
 
     /** Whether FastCDC (Content-Defined Chunking) is enabled for delta sync.
